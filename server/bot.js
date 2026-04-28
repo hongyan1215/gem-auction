@@ -362,7 +362,7 @@ function botPickBid(p, game) {
       // 50% rounds it acts on the peek; the other 50% it relies on a STRONG
       // non-cheat heuristic so it stays competitive even without the peek.
       const expectedValue = lotValue + missionBonus + oneAwayBonus + diversityBonus;
-      const usePeek = Math.random() < 0.50;
+      const usePeek = Math.random() < 0.70;
       let peekMax = -1;
       if (usePeek) {
         try {
@@ -555,6 +555,21 @@ function botPickBid(p, game) {
     bid = 1 + Math.floor(r() * Math.min(3, p.money - 1));
   } else if (netValue >= 10 && p.money >= 3 && bid < 2 && t.intelligence >= 0.4) {
     bid = 2 + Math.floor(r() * Math.min(3, p.money - 2));
+  }
+
+  // ============ OVERPAY GUARD: never bid more than ~115% of expected value ============
+  // Stops rich bots from dumping cash on low-value lots just because they can.
+  // Jackpot lots and Loan cards are exempt (Loan: bid IS interest, not a price).
+  const _isJackpot = (missionBonus >= 10) || (lotValue >= 16) || (card.kind === 'INVEST' && (card.value || 0) >= 10);
+  if (!_isJackpot && card.kind !== 'LOAN') {
+    const ev = lotValue + missionBonus + diversityBonus + oneAwayBonus;
+    if (ev > 0) {
+      const hardCap = Math.ceil(ev * 1.15) + 1;
+      if (bid > hardCap) bid = hardCap;
+    } else if (ev <= 0 && bid > 1) {
+      // Worthless lot: token bid only
+      bid = Math.min(bid, 1);
+    }
   }
 
   bid = Math.max(0, Math.min(bid, p.money));

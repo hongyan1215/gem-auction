@@ -397,8 +397,9 @@ class GameState {
 
   // Public snapshot for a viewer
   publicSnapshot(viewerId = null) {
-    // Bids exposed only after BIDDING phase ends
-    const showBids = this.phase === 'AWAITING_REVEAL' || this.phase === 'GAME_OVER';
+    // Bids exposed after BIDDING phase ends — keep visible during reveal AND
+    // post-reveal RESOLVING window so players can see what everyone bid.
+    const showBids = this.phase === 'AWAITING_REVEAL' || this.phase === 'RESOLVING' || this.phase === 'GAME_OVER';
     const bidsPublic = {};
     if (showBids) {
       for (const [pid, amt] of this.bids.entries()) bidsPublic[pid] = amt;
