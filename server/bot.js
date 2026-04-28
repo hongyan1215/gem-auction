@@ -5,12 +5,12 @@ const { GEM_TYPES, valueForCount, counts, meets, TOTAL_GEM_AUCTIONS } = require(
 
 // ============ Archetype + traits ============
 const BOT_ARCHETYPES = {
-  Hoarder:       { aggression: 0.85, missionFocus: 0.55, intelligence: 0.75, signalAware: 0.6, loanLover: 0.2, investLover: 0.65 },
-  Banker:        { aggression: 0.90, missionFocus: 0.55, intelligence: 0.9, signalAware: 0.75, loanLover: 0.3, investLover: 0.8 },
-  Aggressor:     { aggression: 1.05, missionFocus: 0.6, intelligence: 0.7, signalAware: 0.55, loanLover: 0.35, investLover: 0.45 },
-  Sniper:        { aggression: 1.00, missionFocus: 0.65, intelligence: 1.0, signalAware: 0.9, loanLover: 0.3, investLover: 0.6 },
-  MissionHunter: { aggression: 1.00, missionFocus: 1.1, intelligence: 0.8, signalAware: 0.7, loanLover: 0.4, investLover: 0.5 },
-  LoanLover:     { aggression: 0.85, missionFocus: 0.55, intelligence: 0.7, signalAware: 0.55, loanLover: 0.45, investLover: 0.65 },
+  Hoarder:       { aggression: 0.95, missionFocus: 0.65, intelligence: 0.80, signalAware: 0.65, loanLover: 0.30, investLover: 0.80 },
+  Banker:        { aggression: 0.95, missionFocus: 0.60, intelligence: 0.95, signalAware: 0.80, loanLover: 0.40, investLover: 0.95 },
+  Aggressor:     { aggression: 1.15, missionFocus: 0.65, intelligence: 0.75, signalAware: 0.60, loanLover: 0.50, investLover: 0.65 },
+  Sniper:        { aggression: 1.05, missionFocus: 0.70, intelligence: 1.00, signalAware: 0.95, loanLover: 0.40, investLover: 0.80 },
+  MissionHunter: { aggression: 1.10, missionFocus: 1.30, intelligence: 0.85, signalAware: 0.75, loanLover: 0.50, investLover: 0.65 },
+  LoanLover:     { aggression: 0.90, missionFocus: 0.60, intelligence: 0.75, signalAware: 0.60, loanLover: 0.55, investLover: 0.75 },
   Wildcard:      { aggression: 1.10, missionFocus: 0.85, intelligence: 1.0, signalAware: 1.0, loanLover: 0.85, investLover: 0.85 },
   Newbie:        { aggression: 0.65, missionFocus: 0.4, intelligence: 0.20, signalAware: 0.20, loanLover: 0.4, investLover: 0.4 },
 };
@@ -353,6 +353,41 @@ function botPickBid(p, game) {
 
   // ============ HARD CAP: don't overpay vs opponents' available cash ============
   bid = _capByOpponents(p, game, bid);
+
+  // ============ PACING: don't blow all cash early ============
+  // Wildcard wins because everyone else burns cash in first 5 rounds, then it
+  // sniper-buys cheap late gems. Give every bot pacing too — but per-style.
+  if (styleKey !== 'wildcard') {
+    const remainingAuctions = Math.max(1, (game.deck && game.deck.length) || 1);
+    // pacingFactor: lower = spend faster (1.0 = even split, 0.6 = front-load)
+    const paceFactorByStyle = {
+      hoarder: 1.20,        // most patient
+      banker: 1.15,
+      sniper: 1.10,
+      missionhunter: 1.00,
+      loanlover: 1.00,
+      aggressor: 0.75,      // still front-loads
+      newbie: 0.60,         // dumb, burns cash
+    };
+    const pf = paceFactorByStyle[styleKey] || 1.00;
+    const paceBudget = Math.ceil((p.money * pf) / remainingAuctions) + 2; // +2 floor jitter
+    const isJackpot = (missionBonus >= 10) || (lotValue >= 16) || (card.kind === 'INVEST' && (card.value || 0) >= 10);
+
+    // Late-game blitz: when ≤6 cards left and a known cheater (Wildcard) still has cash,
+    // smart bots dump pacing and try to outbid them. Wildcard wins by sniping cheap late
+    // gems — flip the script and make late gems EXPENSIVE.
+    let lateBlitz = false;
+    if (t.intelligence >= 0.7 && remainingAuctions <= 6 && lotValue >= 8) {
+      const richOpp = game.players.some(o =>
+        o.id !== p.id && (o.profile?.style || '').toLowerCase() === 'wildcard' && o.money >= 6
+      );
+      if (richOpp) lateBlitz = true;
+    }
+
+    if (!isJackpot && !lateBlitz && bid > paceBudget) {
+      bid = paceBudget;
+    }
+  }
 
   // ============ MINIMUM-FLOOR: don't pass on obviously valuable lots ============
   // If lot has positive net value and we have cash, at least throw a minimal bid in.
