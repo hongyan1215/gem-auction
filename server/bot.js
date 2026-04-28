@@ -5,12 +5,12 @@ const { GEM_TYPES, valueForCount, counts, meets, TOTAL_GEM_AUCTIONS } = require(
 
 // ============ Archetype + traits ============
 const BOT_ARCHETYPES = {
-  Hoarder:       { aggression: 0.50, missionFocus: 0.4, intelligence: 0.6, signalAware: 0.5, loanLover: 0.2, investLover: 0.6 },
-  Banker:        { aggression: 0.45, missionFocus: 0.4, intelligence: 0.7, signalAware: 0.6, loanLover: 0.5, investLover: 0.7 },
-  Aggressor:     { aggression: 1.10, missionFocus: 0.5, intelligence: 0.45, signalAware: 0.4, loanLover: 0.3, investLover: 0.4 },
-  Sniper:        { aggression: 0.60, missionFocus: 0.5, intelligence: 0.85, signalAware: 0.8, loanLover: 0.25, investLover: 0.5 },
-  MissionHunter: { aggression: 0.85, missionFocus: 1.0, intelligence: 0.65, signalAware: 0.55, loanLover: 0.4, investLover: 0.5 },
-  LoanLover:     { aggression: 0.80, missionFocus: 0.5, intelligence: 0.55, signalAware: 0.45, loanLover: 0.95, investLover: 0.6 },
+  Hoarder:       { aggression: 0.85, missionFocus: 0.55, intelligence: 0.75, signalAware: 0.6, loanLover: 0.2, investLover: 0.65 },
+  Banker:        { aggression: 0.90, missionFocus: 0.5, intelligence: 0.9, signalAware: 0.75, loanLover: 0.5, investLover: 0.8 },
+  Aggressor:     { aggression: 1.00, missionFocus: 0.55, intelligence: 0.55, signalAware: 0.45, loanLover: 0.3, investLover: 0.4 },
+  Sniper:        { aggression: 1.00, missionFocus: 0.65, intelligence: 1.0, signalAware: 0.9, loanLover: 0.3, investLover: 0.6 },
+  MissionHunter: { aggression: 0.95, missionFocus: 1.0, intelligence: 0.7, signalAware: 0.6, loanLover: 0.4, investLover: 0.5 },
+  LoanLover:     { aggression: 0.80, missionFocus: 0.55, intelligence: 0.6, signalAware: 0.5, loanLover: 0.85, investLover: 0.6 },
   Wildcard:      { aggression: 0.75, missionFocus: 0.5, intelligence: 0.30, signalAware: 0.30, loanLover: 0.5, investLover: 0.5 },
   Newbie:        { aggression: 0.65, missionFocus: 0.4, intelligence: 0.20, signalAware: 0.20, loanLover: 0.4, investLover: 0.4 },
 };
@@ -52,7 +52,7 @@ function botPickBid(p, game) {
     // True value of loan = (value - bid) cash now - bid_endgame_loss = value - bid - 0 ? no.
     // Net at end: +money received +0 (cash 1:1) - value loaned. So: -bid (interest cost).
     // BUT current cash can buy gems → indirect value. Worth ~20-40% of received cash.
-    const cashUtility = 0.3 + 0.4 * t.loanLover; // 0.3 .. 0.7
+    const cashUtility = 0.35 + 0.45 * t.loanLover; // 0.35 .. 0.80
     const debtAlready = (p.loans || []).reduce((a, l) => a + l.value, 0);
     const debtPenalty = Math.min(1.0, debtAlready / 30); // discourage stacking
     const willingnessFactor = (1 - debtPenalty) * cashUtility;
@@ -163,7 +163,7 @@ function botPickBid(p, game) {
   const progress = Math.min(1, game.gemsAuctionedCount / TOTAL_GEM_AUCTIONS);
   const lotsRemaining = Math.max(1, TOTAL_GEM_AUCTIONS - game.gemsAuctionedCount);
   const endgameUrgency = lotsRemaining <= 5 ? (1 + (5 - lotsRemaining) * 0.13 * t.intelligence) : 1.0;
-  const earlyDiscount = 0.55 + progress * 0.45;
+  const earlyDiscount = 0.75 + progress * 0.25;
 
   let base = lotValue * earlyDiscount + missionBonus + blockBonus + diversityBonus + oneAwayBonus - leakPenalty;
   base *= endgameUrgency;
@@ -188,14 +188,14 @@ function botPickBid(p, game) {
         }
       }
       // High-value strike
-      const strikeWorthy = expectedValue >= 12 && p.money >= 8;
-      if (strikeWorthy && r() < (0.45 + 0.30 * t.aggression)) {
-        let strike = Math.floor(expectedValue * (0.78 + r() * 0.22));
+      const strikeWorthy = expectedValue >= 7 && p.money >= 4;
+      if (strikeWorthy && r() < (0.65 + 0.25 * t.aggression)) {
+        let strike = Math.floor(expectedValue * (0.85 + r() * 0.15));
         strike = Math.min(strike, p.money);
         return Math.max(2, strike);
       }
-      // Otherwise solid mid bid
-      personalityMult = 0.55 + r() * 0.20;
+      // Otherwise solid bid (Sniper isn't passive)
+      personalityMult = 0.78 + r() * 0.18;
       break;
     }
     case 'wildcard':
@@ -210,8 +210,8 @@ function botPickBid(p, game) {
       if (p.money < 8 && base < 14) personalityMult = 0.6 + r() * 0.2;
       break;
     case 'hoarder':
-      // bias to underbid slightly
-      personalityMult = 0.50 + r() * 0.25;
+      // hoard cash early, strike late when gems are scarce
+      personalityMult = (progress < 0.45 ? 0.65 : 0.95) + r() * 0.18;
       break;
   }
 
