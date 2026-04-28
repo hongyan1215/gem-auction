@@ -24,6 +24,8 @@ function runOne() {
   const game = new GameState(playerSpecs);
   // Patch out setTimeout-driven flow — we drive synchronously
   game.startGame();
+  // Skip PREGAME countdown for headless self-play
+  if (game.phase === 'PREGAME') game.beginFirstRound();
 
   let safety = 200;
   while (game.phase !== 'GAME_OVER' && safety-- > 0) {
