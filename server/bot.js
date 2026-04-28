@@ -37,6 +37,54 @@ function makeBotProfile() {
   return { style, traits: rollTraits(style), name: randomBotName() + '·' + style };
 }
 
+// ============ Per-archetype CHEATS (privileged peeks) ============
+// Each style gets a unique privileged view of game state — different from the
+// player's legitimate observation — to amplify its strategic identity.
+function _cheatsFor(p, game) {
+  const style = String(p.profile?.style || '').toLowerCase();
+  const out = {
+    deckCounts: null,        // {AUCTION_GEM, AUCTION_2GEM, INVEST, LOAN}
+    nextInvest: null,        // value of next Invest in deck (0 if none)
+    nextLoan: null,          // value of next Loan in deck (0 if none)
+    futureGemAuctions: 0,    // remaining gem auction "slots"
+    oppHiddenAll: null,      // [{id, hidden:[gem...]}] — peeks at all opp hidden hands
+    oppHiddenCounts: null,   // {gemType: count across all opp hiddens}
+    oppMoneyByMission: null, // {missionIdx: [oppId...]} — who can finish each mission
+  };
+  const deck = game.deck || [];
+  const deckCounts = { AUCTION_GEM: 0, AUCTION_2GEM: 0, INVEST: 0, LOAN: 0 };
+  for (const c of deck) {
+    if (c.kind === 'AUCTION_GEM') {
+      if ((c.size || 1) >= 2) deckCounts.AUCTION_2GEM++;
+      else deckCounts.AUCTION_GEM++;
+    } else if (c.kind === 'INVEST') deckCounts.INVEST++;
+    else if (c.kind === 'LOAN') deckCounts.LOAN++;
+  }
+  out.deckCounts = deckCounts;
+  out.futureGemAuctions = deckCounts.AUCTION_GEM + deckCounts.AUCTION_2GEM * 2;
+
+  // Hoarder/Banker/Aggressor see deck composition & next of each kind
+  if (style === 'hoarder' || style === 'banker' || style === 'aggressor' || style === 'loanlover') {
+    for (const c of deck) {
+      if (c.kind === 'INVEST' && out.nextInvest == null) out.nextInvest = c.value;
+      if (c.kind === 'LOAN' && out.nextLoan == null) out.nextLoan = c.value;
+      if (out.nextInvest != null && out.nextLoan != null) break;
+    }
+  }
+  // MissionHunter peeks at opp hidden gems to predict who can rush a mission
+  if (style === 'missionhunter') {
+    out.oppHiddenAll = [];
+    const counts = {};
+    for (const opp of game.players) {
+      if (opp.id === p.id) continue;
+      out.oppHiddenAll.push({ id: opp.id, hidden: [...opp.hiddenGems] });
+      for (const g of opp.hiddenGems) counts[g] = (counts[g] || 0) + 1;
+    }
+    out.oppHiddenCounts = counts;
+  }
+  return out;
+}
+
 // ============ Bidding logic ============
 function botPickBid(p, game) {
   const r = Math.random;
@@ -45,6 +93,7 @@ function botPickBid(p, game) {
   const t = profile.traits;
   const card = game.currentCard;
   const lot = game.currentLot || [];
+  const cheats = _cheatsFor(p, game);
 
   // ---- LOAN handling ----
   if (card.kind === 'LOAN') {
@@ -60,7 +109,15 @@ function botPickBid(p, game) {
     if (debtAlready >= debtCap) return 0;
     if (debtAlready >= 25) return 0;
     const debtPenalty = Math.min(1.0, debtAlready / 14); // discourage stacking
-    const willingnessFactor = (1 - debtPenalty) * cashUtility;
+    let willingnessFactor = (1 - debtPenalty) * cashUtility;
+    // CHEAT (LoanLover): if a higher-value Loan is still in deck, fold and wait
+    if (style === 'LoanLover' && cheats.nextLoan != null && cheats.nextLoan > card.value) {
+      return 0;
+    }
+    // CHEAT (LoanLover): if THIS is the best/last loan, push hard
+    if (style === 'LoanLover' && (cheats.deckCounts.LOAN === 0 || cheats.nextLoan == null)) {
+      willingnessFactor *= 1.25;
+    }
     // OPENING PHASE COOLDOWN: in first 3 rounds, slash loan interest
     const earlyCooldown = game.round <= 3 ? 0.55 : 1.0;
     let bid = Math.floor(card.value * willingnessFactor * earlyCooldown * (0.7 + r() * 0.3));
@@ -72,12 +129,17 @@ function botPickBid(p, game) {
 
   // ---- INVEST handling ----
   if (card.kind === 'INVEST') {
-    // Cost = bid (cash). Endgame: +investValue.
-    // Net = investValue - bid. Bid up to investValue - margin.
+    // CHEAT (Banker): if a more valuable Invest is coming, skip this one
+    if (style === 'Banker' && cheats.nextInvest != null && cheats.nextInvest > card.value) {
+      // Wait for the better one
+      return 0;
+    }
     const valueToMe = card.value;
     const margin = 1 + r() * 2; // require 1-3 profit margin
     let maxWilling = Math.max(0, valueToMe - margin);
     maxWilling *= 0.7 + 0.6 * t.investLover; // 0.7 .. 1.3
+    // CHEAT (Banker): last invest in deck → push to win
+    if (style === 'Banker' && cheats.deckCounts.INVEST === 0) maxWilling *= 1.20;
     let bid = Math.floor(maxWilling * (t.aggression * (0.7 + r() * 0.4)));
     bid = Math.min(bid, p.money);
     bid = _capByOpponents(p, game, bid);
@@ -356,25 +418,52 @@ function botPickBid(p, game) {
       base *= 0.85 + r() * 0.4; // noisy valuation
       break;
     case 'aggressor':
-      // Cash discipline: don't bleed below 8 unless huge value
-      if (p.money < 8 && base < 14) personalityMult = 0.55 + r() * 0.2;
-      // Aggressor still uses opp-aware sniping below
+      // CHEAT: knows future gem auction count → all-in when this is one of the last big lots
+      if (cheats.futureGemAuctions <= 3 && lotValue >= 6) {
+        // This may be the last gem chance; bid hard
+        personalityMult = (1.20 + r() * 0.15);
+        base *= 1.15;
+      } else if (p.money < 8 && base < 14) personalityMult = 0.55 + r() * 0.2;
       else personalityMult = t.aggression * (0.98 + r() * 0.12);
       break;
     case 'hoarder':
+      // CHEAT: knows exact remaining gem-auction count → ultra-precise pacing
       // Hoard early, then unload aggressively. Esp value gem stacks for V(n).
-      // Late-game: convert cash to anything that holds value.
       personalityMult = (progress < 0.4 ? 0.78 : 1.18) + r() * 0.15;
-      // Hoarder also values gems higher because of their endgame V(n) leverage
       if (progress >= 0.4) base *= 1.10;
+      // Late-game: if few gem auctions left and we're cash-heavy, weaponize
+      if (cheats.futureGemAuctions <= 4 && p.money >= 10 && lotValue >= 6) {
+        base *= 1.25; personalityMult *= 1.10;
+      }
       break;
     case 'banker':
-      // Calculated: bid hard when value clear, fold when not
+      // CHEAT: knows next Invest face value → bids accordingly on current INVEST cards
+      // (handled in INVEST branch above ideally; here we boost gem bids when no good Invest coming)
       personalityMult = 0.95 + r() * 0.15;
+      // If no more high-value Invest cards remain, banker shifts focus to gems
+      if (cheats.deckCounts && cheats.deckCounts.INVEST <= 1 && lotValue >= 5) {
+        base *= 1.12;
+      }
       break;
     case 'missionhunter':
-      // Pursue missions decisively
-      personalityMult = (missionBonus > 0 ? 1.10 : 0.85) + r() * 0.15;
+      // CHEAT: peeks at opp hidden gems → knows if opp could complete a mission with this lot
+      // Boost if winning this lot blocks an opp who is mission-close
+      let blockBoost = 0;
+      if (cheats.oppHiddenAll) {
+        for (const m of game.missions) {
+          if (m.completedBy) continue;
+          for (const opp of cheats.oppHiddenAll) {
+            const oppPool = [...(game.players.find(x=>x.id===opp.id)?.wonGems||[])];
+            if (meets(m, oppPool.concat(lot))) { blockBoost += m.score * 0.5; break; }
+          }
+        }
+      }
+      base += blockBoost;
+      personalityMult = (missionBonus > 0 ? 1.15 : 0.85) + r() * 0.15;
+      break;
+    case 'loanlover':
+      // CHEAT: knows if a more profitable Loan card is coming → don't waste cash now
+      personalityMult = 1.0 + r() * 0.10;
       break;
   }
 
