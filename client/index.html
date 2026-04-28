@@ -194,7 +194,10 @@ function BidInput({ snap, me, onSubmit }) {
   const urgent = remain < 4000;
   const submit = () => { onSubmit(amt); setSubmitted(amt); };
   return (
-    <div className={'card-bg rounded-lg p-4 transition-all ' + (urgent ? 'ring-2 ring-rose-500 animate-pulse' : 'ring-2 ring-amber-400/30')}>
+    <div className={'card-bg rounded-lg p-4 transition-all relative ' + (urgent ? 'ring-2 ring-rose-500 animate-pulse' : 'ring-2 ring-amber-400/30')}>
+      {snap.round === 1 && submitted == null && (
+        <div className="absolute -top-3 left-4 px-2 py-0.5 bg-amber-400 text-slate-900 text-xs font-bold rounded shadow animate-bounce">👇 拉滑桿出價，然後按確認</div>
+      )}
       <div className="flex justify-between items-center mb-2">
         <div className="text-xs uppercase tracking-wide opacity-80">你的出價 <span className="opacity-60">(上限 ${max})</span></div>
         <div className={'text-2xl font-mono font-bold ' + (urgent ? 'text-rose-400' : 'text-amber-300')}>{(remain / 1000).toFixed(1)}s</div>
@@ -329,6 +332,70 @@ function GameOver({ snap }) {
   );
 }
 
+function HelpModal({ onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card-bg rounded-xl p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto ring-2 ring-amber-400/60" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-4">
+          <h2 className="text-2xl font-bold text-amber-300">📖 規則速查</h2>
+          <button onClick={onClose} className="text-xl opacity-60 hover:opacity-100">✕</button>
+        </div>
+        <div className="space-y-4 text-sm">
+          <section>
+            <h3 className="font-bold text-amber-200 mb-1">🎯 目標</h3>
+            <p className="opacity-80">分數最高者獲勝。總分 = 剩餘金幣 + 寶石價值 + 投資面額 - 貸款面額 + 任務加分。</p>
+          </section>
+          <section>
+            <h3 className="font-bold text-amber-200 mb-1">💰 起始狀態</h3>
+            <ul className="list-disc pl-5 space-y-1 opacity-80">
+              <li>每人 $20、3 顆<b>隱藏寶石</b>（只有自己看得到）</li>
+              <li>15 顆寶石進拍賣池，剩 15 顆分給玩家當隱藏</li>
+            </ul>
+          </section>
+          <section>
+            <h3 className="font-bold text-amber-200 mb-1">🔄 回合流程</h3>
+            <ol className="list-decimal pl-5 space-y-1 opacity-80">
+              <li><b>翻卡</b>：拍賣 1/2 顆寶石、投資、或貸款</li>
+              <li><b>盲拍 15 秒</b>：所有人同時暗標，超時視為 $0</li>
+              <li><b>結算</b>：最高價得標，公開所有出價</li>
+              <li><b>強制公開</b>：得標者選一顆隱藏寶石公開（10 秒，超時隨機）</li>
+            </ol>
+          </section>
+          <section>
+            <h3 className="font-bold text-amber-200 mb-1">💎 寶石價值 V(n)</h3>
+            <p className="opacity-80"><code className="bg-slate-800 px-1 rounded">V(n) = min(4n, 20)</code>，n = 結算時「沒被拍走」的同色寶石數</p>
+            <ul className="list-disc pl-5 space-y-1 opacity-80 text-xs mt-1">
+              <li>n=0 → 0 分（被拍光的色變廢石）</li>
+              <li>n=1 → 4、n=2 → 8、n=3 → 12、n=4 → 16、n=5+ → 20（封頂）</li>
+              <li><b>策略</b>：競標一色 = 一邊降它的 V，一邊讓對手手上同色變廢</li>
+            </ul>
+          </section>
+          <section>
+            <h3 className="font-bold text-amber-200 mb-1">⚖️ 平手規則</h3>
+            <p className="opacity-80">出價相同 → 從上輪得標者「左手邊（順時針）」算最近者勝。第 1 輪隨機。</p>
+          </section>
+          <section>
+            <h3 className="font-bold text-amber-200 mb-1">📈 投資 / 📉 貸款</h3>
+            <ul className="list-disc pl-5 space-y-1 opacity-80">
+              <li><b>投資 (Invest)</b>：押金扣下，結算時退回押金 + 加面額分數（5 或 10）</li>
+              <li><b>貸款 (Loan)</b>：立刻拿到 (面額 - 出價) 金幣，結算時扣面額 (10 或 20)</li>
+            </ul>
+          </section>
+          <section>
+            <h3 className="font-bold text-amber-200 mb-1">🎯 任務</h3>
+            <p className="opacity-80">公開 4 題，先達成者獨佔分數（其他人不能再拿同題）。</p>
+          </section>
+          <section>
+            <h3 className="font-bold text-amber-200 mb-1">🏁 結束</h3>
+            <p className="opacity-80">15 顆拍賣寶石全部拍完即結算。</p>
+          </section>
+        </div>
+        <button onClick={onClose} className="mt-4 w-full py-2 bg-amber-500 text-slate-900 font-bold rounded">關閉</button>
+      </div>
+    </div>
+  );
+}
+
 function RevealPicker({ me, onReveal, deadline }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 200); return () => clearInterval(id); }, []);
@@ -382,6 +449,7 @@ function Game({ snap, socket, myId }) {
   const showBids = snap.phase === 'AWAITING_REVEAL' || snap.phase === 'RESOLVING';
   const bidOf = (pid) => (showBids && snap.bidsPublic ? (snap.bidsPublic[pid] != null ? snap.bidsPublic[pid] : null) : null);
   const [showOpening, setShowOpening] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
   useEffect(() => { if (snap.round > 1) setShowOpening(false); }, [snap.round]);
 
   const onBid = (amount) => socket.emit('submitBid', { amount });
@@ -401,6 +469,8 @@ function Game({ snap, socket, myId }) {
   return (
     <div className="grid grid-cols-12 gap-4 max-w-7xl mx-auto p-4">
       {showOpening && snap.round === 1 && <OpeningOverlay snap={snap} onClose={() => setShowOpening(false)} />}
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+      <button onClick={() => setShowHelp(true)} className="fixed bottom-4 right-4 z-40 px-4 py-2 rounded-full bg-amber-500/90 hover:bg-amber-400 text-slate-900 font-bold shadow-lg ring-2 ring-amber-300/50" title="開啟規則速查 (?)">📖 規則</button>
       {/* Top: opponents */}
       <div className="col-span-12 grid grid-cols-4 gap-3">
         {others.map(p => <PlayerCard key={p.id} p={p} isWinner={p.seat === winnerSeat && (snap.phase === 'AWAITING_REVEAL' || snap.phase === 'RESOLVING')} bidShown={bidOf(p.id)} />)}
