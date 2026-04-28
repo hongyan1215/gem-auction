@@ -362,79 +362,30 @@ function botPickBid(p, game) {
   const styleKey = String(style || '').toLowerCase();
   switch (styleKey) {
     case 'sniper': {
-      // CHEATER (peek mode, throttled to 50%): Sniper goes LAST and CAN see bids.
-      // 50% rounds it acts on the peek; the other 50% it relies on a STRONG
-      // non-cheat heuristic so it stays competitive even without the peek.
+      // CHEATER (peek mode): Sniper goes LAST and CAN see all current bids.
+      // Pure logic: if peekMax+1 ≤ EV → snipe at peekMax+1. Otherwise pass (bid 0).
+      // No random skips, no fallback overbidding — that wastes the cheat.
       const expectedValue = lotValue + missionBonus + oneAwayBonus + diversityBonus;
-      const usePeek = Math.random() < 0.70;
       let peekMax = -1;
-      if (usePeek) {
-        try {
-          if (game && game.bids && typeof game.bids.forEach === 'function') {
-            game.bids.forEach((amt, pid) => {
-              if (pid !== p.id && typeof amt === 'number' && amt > peekMax) peekMax = amt;
-            });
-          }
-        } catch {}
-      }
-      if (usePeek && peekMax >= 0 && p.money >= 1) {
-        // Sniper now JUDGES whether the snipe is worth it instead of +1ing every time.
-        const target = Math.min(p.money, peekMax + 1);
-        const profit = expectedValue - target;
-        // Required margin scales with target — small bids need ~1, mid bids ~1.5, big bids ~2
-        const requiredMargin = Math.max(0.5, target * 0.12);
-        // Don't dump >65% of cash on a single snipe unless EV crushes it
-        const cashFraction = target / Math.max(1, p.money);
-        const cashOK = cashFraction <= 0.65 || profit >= target * 0.30;
-        // Random skip — even good snipes get passed ~12% of the time (anti-tell)
-        const skip = r() < 0.12;
-        // Cheap easy snipes (peek says 0~2) — still take if EV solid, less skip
-        const easyGrab = peekMax <= 2 && expectedValue >= 3 && r() > 0.08;
-        if (easyGrab) {
+      try {
+        if (game && game.bids && typeof game.bids.forEach === 'function') {
+          game.bids.forEach((amt, pid) => {
+            if (pid !== p.id && typeof amt === 'number' && amt > peekMax) peekMax = amt;
+          });
+        }
+      } catch {}
+      if (peekMax >= 0 && p.money >= 1) {
+        const target = peekMax + 1;
+        // Reasonable = target ≤ EV (with tiny ±0.5 noise so we don't always +1 on the dot)
+        const noise = (r() - 0.5);  // -0.5..+0.5
+        if (target <= p.money && target <= expectedValue + noise) {
           return Math.max(1, target);
         }
-        if (!skip && profit >= requiredMargin && cashOK) {
-          return Math.max(1, target);
-        }
-        if (peekMax === 0 && expectedValue >= 2 && r() > 0.25) return Math.min(1, p.money);
-        // Otherwise: fall through to non-cheat heuristic (may still bid lower / skip)
+        // Unreasonable: don't chase. Pass.
+        return 0;
       }
-      // ---------- NON-CHEAT MODE: strong model-based sniping ----------
-      // 1) Aggressive opp-max prediction (assumes rivals bid ~75% of their cash on big lots)
-      let predOpp = predictedOppMax;
-      if (predOpp == null) {
-        let maxOppCash = 0;
-        for (const opp of game.players) {
-          if (opp.id === p.id) continue;
-          if (opp.money > maxOppCash) maxOppCash = opp.money;
-        }
-        // Scale prediction by lot value: high-value lots → opps bid more
-        const valueScale = Math.min(1.0, expectedValue / 12);
-        predOpp = maxOppCash * (0.45 + 0.40 * valueScale); // 0.45..0.85
-      }
-      // 2) Try to snipe at predOpp+1 if profitable
-      if (p.money >= 2) {
-        const target = Math.min(p.money, Math.ceil(predOpp + 1 + r() * 1.5));
-        const profit = expectedValue - target;
-        if (profit >= 0.0) {
-          return Math.max(1, target);
-        }
-      }
-      // 3) Strike on high-value lots even if margin is thin (Sniper specialty)
-      const strikeWorthy = expectedValue >= 5 && p.money >= 2;
-      if (strikeWorthy && r() < (0.85 + 0.12 * t.aggression)) {
-        let strike = Math.floor(expectedValue * (0.85 + r() * 0.15));
-        strike = Math.min(strike, p.money);
-        return Math.max(2, strike);
-      }
-      // 4) Endgame cash-dump: don't sit on idle money
-      const lotsLeft = Math.max(1, TOTAL_GEM_AUCTIONS - game.gemsAuctionedCount);
-      if (lotsLeft <= 4 && p.money >= 6 && expectedValue >= 3) {
-        const dump = Math.min(p.money, Math.max(2, Math.floor(p.money / lotsLeft) + 2));
-        return dump;
-      }
-      personalityMult = 0.95 + r() * 0.18;
-      break;
+      // No peek data (shouldn't happen at Sniper's turn) → conservative pass
+      return 0;
     }
     case 'wildcard': {
       // CHEATER: knows true endgame V(n). lotValue is the TRUE total value.
