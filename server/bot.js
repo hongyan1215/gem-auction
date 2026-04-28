@@ -5,14 +5,14 @@ const { GEM_TYPES, valueForCount, counts, meets, TOTAL_GEM_AUCTIONS } = require(
 
 // ============ Archetype + traits ============
 const BOT_ARCHETYPES = {
-  Hoarder:       { aggression: 0.95, missionFocus: 0.65, intelligence: 0.80, signalAware: 0.65, loanLover: 0.30, investLover: 0.80 },
-  Banker:        { aggression: 0.95, missionFocus: 0.60, intelligence: 0.95, signalAware: 0.80, loanLover: 0.40, investLover: 0.95 },
-  Aggressor:     { aggression: 1.15, missionFocus: 0.65, intelligence: 0.75, signalAware: 0.60, loanLover: 0.50, investLover: 0.65 },
-  Sniper:        { aggression: 1.05, missionFocus: 0.70, intelligence: 1.00, signalAware: 0.95, loanLover: 0.40, investLover: 0.80 },
-  MissionHunter: { aggression: 1.10, missionFocus: 1.30, intelligence: 0.85, signalAware: 0.75, loanLover: 0.50, investLover: 0.65 },
-  LoanLover:     { aggression: 0.90, missionFocus: 0.60, intelligence: 0.75, signalAware: 0.60, loanLover: 0.55, investLover: 0.75 },
-  Wildcard:      { aggression: 1.10, missionFocus: 0.85, intelligence: 1.0, signalAware: 1.0, loanLover: 0.85, investLover: 0.85 },
-  Newbie:        { aggression: 0.65, missionFocus: 0.4, intelligence: 0.20, signalAware: 0.20, loanLover: 0.4, investLover: 0.4 },
+  Hoarder:       { aggression: 1.00, missionFocus: 0.75, intelligence: 0.92, signalAware: 0.80, loanLover: 0.35, investLover: 0.85 },
+  Banker:        { aggression: 1.00, missionFocus: 0.70, intelligence: 1.05, signalAware: 0.92, loanLover: 0.45, investLover: 1.00 },
+  Aggressor:     { aggression: 1.20, missionFocus: 0.75, intelligence: 0.90, signalAware: 0.75, loanLover: 0.55, investLover: 0.70 },
+  Sniper:        { aggression: 1.10, missionFocus: 0.80, intelligence: 1.10, signalAware: 1.05, loanLover: 0.45, investLover: 0.85 },
+  MissionHunter: { aggression: 1.15, missionFocus: 1.40, intelligence: 1.00, signalAware: 0.90, loanLover: 0.55, investLover: 0.70 },
+  LoanLover:     { aggression: 0.95, missionFocus: 0.70, intelligence: 0.90, signalAware: 0.75, loanLover: 0.65, investLover: 0.80 },
+  Wildcard:      { aggression: 1.15, missionFocus: 0.95, intelligence: 1.10, signalAware: 1.10, loanLover: 0.85, investLover: 0.90 },
+  Newbie:        { aggression: 0.85, missionFocus: 0.55, intelligence: 0.55, signalAware: 0.50, loanLover: 0.50, investLover: 0.55 },
 };
 const STYLE_KEYS = Object.keys(BOT_ARCHETYPES);
 
@@ -418,8 +418,9 @@ function botPickBid(p, game) {
       break;
     }
     case 'newbie':
-      personalityMult = 0.6 + r() * 0.5; // sometimes way over, sometimes way under
-      base *= 0.85 + r() * 0.4; // noisy valuation
+      // Less unhinged: still imperfect but no longer self-destructive
+      personalityMult = 0.80 + r() * 0.30; // 0.80–1.10
+      base *= 0.92 + r() * 0.18;            // mild valuation noise
       break;
     case 'aggressor':
       // CHEAT: knows future gem auction count → all-in when this is one of the last big lots
@@ -517,7 +518,7 @@ function botPickBid(p, game) {
       missionhunter: 1.00,
       loanlover: 1.00,
       aggressor: 0.75,      // still front-loads
-      newbie: 0.60,         // dumb, burns cash
+      newbie: 0.95,         // less wasteful now
     };
     const pf = paceFactorByStyle[styleKey] || 1.00;
     const paceBudget = Math.ceil((p.money * pf) / remainingAuctions) + 2; // +2 floor jitter
