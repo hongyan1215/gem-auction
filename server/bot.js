@@ -358,11 +358,11 @@ function botPickBid(p, game) {
   const styleKey = String(style || '').toLowerCase();
   switch (styleKey) {
     case 'sniper': {
-      // CHEATER (peek mode, throttled to 40%): Sniper goes LAST and CAN see bids,
-      // but only acts on the peek 40% of the time. The other 60% it bids on its own
-      // judgment (legacy sniper logic) so it doesn't dominate every round.
+      // CHEATER (peek mode, throttled to 50%): Sniper goes LAST and CAN see bids.
+      // 50% rounds it acts on the peek; the other 50% it relies on a STRONG
+      // non-cheat heuristic so it stays competitive even without the peek.
       const expectedValue = lotValue + missionBonus + oneAwayBonus + diversityBonus;
-      const usePeek = Math.random() < 0.40;
+      const usePeek = Math.random() < 0.50;
       let peekMax = -1;
       if (usePeek) {
         try {
@@ -376,14 +376,13 @@ function botPickBid(p, game) {
       if (usePeek && peekMax >= 0 && p.money >= 1) {
         const target = Math.min(p.money, peekMax + 1);
         const profit = expectedValue - target;
-        // Snipe if profitable, OR if cheap (peekMax<=2) and value≥3 — steal cheap lots
         if (profit >= 0.5 || (peekMax <= 2 && expectedValue >= 3)) {
           return Math.max(1, target);
         }
-        // If everyone bid 0 and value is decent, grab for 1
         if (peekMax === 0 && expectedValue >= 2) return Math.min(1, p.money);
       }
-      // Fall back to legacy logic if no peek data (shouldn't happen if ordering works)
+      // ---------- NON-CHEAT MODE: strong model-based sniping ----------
+      // 1) Aggressive opp-max prediction (assumes rivals bid ~75% of their cash on big lots)
       let predOpp = predictedOppMax;
       if (predOpp == null) {
         let maxOppCash = 0;
@@ -391,23 +390,32 @@ function botPickBid(p, game) {
           if (opp.id === p.id) continue;
           if (opp.money > maxOppCash) maxOppCash = opp.money;
         }
-        predOpp = maxOppCash * 0.5;
+        // Scale prediction by lot value: high-value lots → opps bid more
+        const valueScale = Math.min(1.0, expectedValue / 12);
+        predOpp = maxOppCash * (0.45 + 0.40 * valueScale); // 0.45..0.85
       }
+      // 2) Try to snipe at predOpp+1 if profitable
       if (p.money >= 2) {
-        const target = Math.min(p.money, Math.ceil(predOpp + 1 + r() * 1.2));
+        const target = Math.min(p.money, Math.ceil(predOpp + 1 + r() * 1.5));
         const profit = expectedValue - target;
-        if (profit >= 0.5) {
+        if (profit >= 0.0) {
           return Math.max(1, target);
         }
       }
-      // Big strike when value is high
-      const strikeWorthy = expectedValue >= 6 && p.money >= 3;
-      if (strikeWorthy && r() < (0.75 + 0.20 * t.aggression)) {
-        let strike = Math.floor(expectedValue * (0.90 + r() * 0.10));
+      // 3) Strike on high-value lots even if margin is thin (Sniper specialty)
+      const strikeWorthy = expectedValue >= 5 && p.money >= 2;
+      if (strikeWorthy && r() < (0.85 + 0.12 * t.aggression)) {
+        let strike = Math.floor(expectedValue * (0.85 + r() * 0.15));
         strike = Math.min(strike, p.money);
         return Math.max(2, strike);
       }
-      personalityMult = 0.80 + r() * 0.18;
+      // 4) Endgame cash-dump: don't sit on idle money
+      const lotsLeft = Math.max(1, TOTAL_GEM_AUCTIONS - game.gemsAuctionedCount);
+      if (lotsLeft <= 4 && p.money >= 6 && expectedValue >= 3) {
+        const dump = Math.min(p.money, Math.max(2, Math.floor(p.money / lotsLeft) + 2));
+        return dump;
+      }
+      personalityMult = 0.95 + r() * 0.18;
       break;
     }
     case 'wildcard': {
