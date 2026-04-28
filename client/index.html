@@ -105,26 +105,33 @@ function MissionBadge({ m, large }) {
 }
 
 function ValueTable({ snap, viewerHidden }) {
-  // V(n) estimate: visible revealed + own hidden
-  const c = {};
-  for (const p of snap.players) for (const g of p.revealedGems) c[g] = (c[g] || 0) + 1;
-  for (const g of (viewerHidden || [])) c[g] = (c[g] || 0) + 1;
-  // unknown hidden = totalHidden - own's
-  const totalKnown = Object.values(c).reduce((a, b) => a + b, 0);
-  const totalHidden = snap.players.reduce((a, p) => a + p.hiddenCount, 0) + (viewerHidden ? viewerHidden.length : 0);
-  // Also +revealed but already counted
+  // Min n = visible "unused" gems (revealed across players + viewer's hidden)
+  // Max n = 6 - won_of_that_color (won gems = removed from unused pool)
+  const minN = {};
+  const wonN = {};
+  for (const t of GEM_TYPES) { minN[t] = 0; wonN[t] = 0; }
+  for (const p of snap.players) {
+    for (const g of p.revealedGems) minN[g] = (minN[g] || 0) + 1;
+    for (const g of p.wonGems) wonN[g] = (wonN[g] || 0) + 1;
+  }
+  for (const g of (viewerHidden || [])) minN[g] = (minN[g] || 0) + 1;
   return (
     <div className="card-bg rounded-lg p-3">
-      <div className="text-xs uppercase tracking-wide opacity-70 mb-2">寶石價值表 V(n) <span className="text-[10px]">已知n / 預估</span></div>
+      <div className="text-xs uppercase tracking-wide opacity-70 mb-2">寶石價值表 V(n) <span className="text-[10px]">已知區間</span></div>
       <div className="grid grid-cols-5 gap-2">
         {GEM_TYPES.map(t => {
-          const n = c[t] || 0;
+          const lo = minN[t] || 0;
+          const hi = 6 - (wonN[t] || 0);
+          const vLo = Vfn(lo);
+          const vHi = Vfn(hi);
+          const range = vLo === vHi ? `${vLo}` : `${vLo}–${vHi}`;
+          const nRange = lo === hi ? `${lo}` : `${lo}~${hi}`;
           return (
-            <Tip key={t} text={`${GEM_LABEL[t]}：目前可見 ${n} 顆，預估價值至少 ${Vfn(n)} 分／顆\n結算公式 V(n)=min(4n,20)\n(被拍走的同色越多→該色越廢)`} side="bottom">
+            <Tip key={t} text={`${GEM_LABEL[t]}\nn 範圍：${nRange}（已被拍走 ${wonN[t]} 顆）\n價值區間：${range} 分／顆\n公式 V(n)=min(4n,20)`} side="bottom">
               <div className="text-center">
                 <Gem type={t} size={24} />
-                <div className="text-xs mt-1">n≥{n}</div>
-                <div className="text-amber-300 font-mono text-sm">{Vfn(n)}+</div>
+                <div className="text-xs mt-1">n={nRange}</div>
+                <div className="text-amber-300 font-mono text-sm">{range}</div>
               </div>
             </Tip>
           );
