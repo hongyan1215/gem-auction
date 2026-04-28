@@ -92,6 +92,18 @@ class Room {
   _scheduleAfterReveal() {
     if (this.game.phase === 'BIDDING') this._scheduleBidTimer();
     else if (this.game.phase === 'AWAITING_REVEAL') this._scheduleRevealTimer();
+    else if (this.game.phase === 'RESOLVING') {
+      // Submitted reveal queued next round; rebroadcast & rearm when it lands.
+      const delay = Math.max(50, (this.game.nextRoundAt || Date.now()) - Date.now()) + 100;
+      setTimeout(() => {
+        if (!this.game) return;
+        this._broadcast();
+        if (this.game.phase === 'BIDDING') {
+          this._scheduleBidTimer();
+          this._maybeBotTurns();
+        }
+      }, delay);
+    }
     this._maybeBotTurns();
   }
 
@@ -112,12 +124,16 @@ class Room {
         this._scheduleRevealTimer();
       }
     } else {
-      // Resolution phase has its own setTimeout in GameState — we'll re-broadcast on next round
+      // RESOLVING: GameState scheduled _beginNextRound; rearm based on its actual deadline.
+      const delay = Math.max(50, (this.game.nextRoundAt || Date.now()) - Date.now()) + 100;
       setTimeout(() => {
+        if (!this.game) return;
         this._broadcast();
-        this._scheduleBidTimer();
-        this._maybeBotTurns();
-      }, RESOLUTION_VIEW_MS + 100);
+        if (this.game.phase === 'BIDDING') {
+          this._scheduleBidTimer();
+          this._maybeBotTurns();
+        }
+      }, delay);
     }
   }
 
@@ -206,10 +222,18 @@ io.on('connection', (socket) => {
     const r = room.game.submitReveal(socket.data.memberId, gem);
     cb && cb(r);
     room._broadcast();
-    if (r.ok && room.game.phase === 'BIDDING') {
+    if (r.ok) {
       clearTimeout(room.revealTimer);
-      room._scheduleBidTimer();
-      room._maybeBotTurns();
+      // _postResolve scheduled _beginNextRound after a short delay; rebroadcast & rearm afterwards.
+      const delay = Math.max(50, (room.game.nextRoundAt || Date.now()) - Date.now()) + 100;
+      setTimeout(() => {
+        if (!room.game) return;
+        room._broadcast();
+        if (room.game.phase === 'BIDDING') {
+          room._scheduleBidTimer();
+          room._maybeBotTurns();
+        }
+      }, delay);
     }
   });
 
