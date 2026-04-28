@@ -329,6 +329,33 @@ function GameOver({ snap }) {
   );
 }
 
+function RevealPicker({ me, onReveal, deadline }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const id = setInterval(() => setNow(Date.now()), 200); return () => clearInterval(id); }, []);
+  const remain = Math.max(0, deadline - now);
+  return (
+    <div className="card-bg rounded-xl p-5 ring-2 ring-yellow-400 bg-gradient-to-br from-yellow-900/30 to-amber-900/20">
+      <div className="flex justify-between items-center mb-3">
+        <div>
+          <div className="text-yellow-300 font-bold text-lg">🎁 你得標了！選一顆隱藏寶石公開</div>
+          <div className="text-xs opacity-70 mt-1">公開的寶石會影響全場市價推算（公開越多、剩下的同色越值錢）</div>
+        </div>
+        <div className="text-2xl font-mono font-bold text-yellow-300">{(remain / 1000).toFixed(1)}s</div>
+      </div>
+      <div className="flex gap-3 flex-wrap justify-center py-3">
+        {me.hiddenGems.map((g, i) => (
+          <button key={i} onClick={() => onReveal(g)}
+                  className="hover:scale-110 transition-transform p-2 rounded-lg bg-slate-800/80 hover:bg-yellow-500/20 ring-1 ring-slate-600 hover:ring-yellow-400">
+            <Gem type={g} size={48} />
+            <div className="text-[10px] mt-1 opacity-70">{GEM_LABEL[g]}</div>
+          </button>
+        ))}
+      </div>
+      <div className="text-[11px] text-center opacity-60 mt-2">⏰ 時間到隨機公開</div>
+    </div>
+  );
+}
+
 function OpeningOverlay({ snap, onClose }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={onClose}>
@@ -400,12 +427,15 @@ function Game({ snap, socket, myId }) {
           </>
         )}
         {snap.phase === 'AWAITING_REVEAL' && (
-          <div className="card-bg rounded-lg p-4 bg-gradient-to-r from-yellow-900/40 to-amber-900/30 ring-2 ring-yellow-400/60">
-            <div className="text-yellow-200 font-bold text-lg">🏆 {snap.players[snap.winner.seat].name} 以 ${snap.winner.amount} 得標！</div>
-            {canReveal && <div className="mt-1 text-sm text-amber-100">↓ 點選一顆隱藏寶石公開（時間到隨機）</div>}
-            {!canReveal && <div className="mt-1 text-xs opacity-70">等待 {snap.players[snap.winner.seat].name} 公開隱藏寶石…</div>}
-            <Countdown deadline={snap.revealDeadline} />
-          </div>
+          canReveal && me && me.hiddenGems && me.hiddenGems.length > 0 ? (
+            <RevealPicker me={me} onReveal={onReveal} deadline={snap.revealDeadline} />
+          ) : (
+            <div className="card-bg rounded-lg p-4 bg-gradient-to-r from-yellow-900/40 to-amber-900/30 ring-2 ring-yellow-400/60">
+              <div className="text-yellow-200 font-bold text-lg">🏆 {snap.players[snap.winner.seat].name} 以 ${snap.winner.amount} 得標！</div>
+              <div className="mt-1 text-xs opacity-70">等待 {snap.players[snap.winner.seat].name} 公開隱藏寶石…</div>
+              <Countdown deadline={snap.revealDeadline} />
+            </div>
+          )
         )}
         {snap.phase === 'RESOLVING' && (
           <div className="card-bg rounded-lg p-3 bg-emerald-900/20">
