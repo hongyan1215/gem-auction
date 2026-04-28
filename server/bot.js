@@ -6,11 +6,11 @@ const { GEM_TYPES, valueForCount, counts, meets, TOTAL_GEM_AUCTIONS } = require(
 // ============ Archetype + traits ============
 const BOT_ARCHETYPES = {
   Hoarder:       { aggression: 0.85, missionFocus: 0.55, intelligence: 0.75, signalAware: 0.6, loanLover: 0.2, investLover: 0.65 },
-  Banker:        { aggression: 0.90, missionFocus: 0.5, intelligence: 0.9, signalAware: 0.75, loanLover: 0.5, investLover: 0.8 },
-  Aggressor:     { aggression: 1.00, missionFocus: 0.55, intelligence: 0.55, signalAware: 0.45, loanLover: 0.3, investLover: 0.4 },
+  Banker:        { aggression: 0.90, missionFocus: 0.55, intelligence: 0.9, signalAware: 0.75, loanLover: 0.3, investLover: 0.8 },
+  Aggressor:     { aggression: 1.05, missionFocus: 0.6, intelligence: 0.7, signalAware: 0.55, loanLover: 0.35, investLover: 0.45 },
   Sniper:        { aggression: 1.00, missionFocus: 0.65, intelligence: 1.0, signalAware: 0.9, loanLover: 0.3, investLover: 0.6 },
-  MissionHunter: { aggression: 0.95, missionFocus: 1.0, intelligence: 0.7, signalAware: 0.6, loanLover: 0.4, investLover: 0.5 },
-  LoanLover:     { aggression: 0.80, missionFocus: 0.55, intelligence: 0.6, signalAware: 0.5, loanLover: 0.85, investLover: 0.6 },
+  MissionHunter: { aggression: 1.00, missionFocus: 1.1, intelligence: 0.8, signalAware: 0.7, loanLover: 0.4, investLover: 0.5 },
+  LoanLover:     { aggression: 0.85, missionFocus: 0.55, intelligence: 0.7, signalAware: 0.55, loanLover: 0.45, investLover: 0.65 },
   Wildcard:      { aggression: 0.75, missionFocus: 0.5, intelligence: 0.30, signalAware: 0.30, loanLover: 0.5, investLover: 0.5 },
   Newbie:        { aggression: 0.65, missionFocus: 0.4, intelligence: 0.20, signalAware: 0.20, loanLover: 0.4, investLover: 0.4 },
 };
@@ -52,12 +52,14 @@ function botPickBid(p, game) {
     // True value of loan = (value - bid) cash now - bid_endgame_loss = value - bid - 0 ? no.
     // Net at end: +money received +0 (cash 1:1) - value loaned. So: -bid (interest cost).
     // BUT current cash can buy gems → indirect value. Worth ~20-40% of received cash.
-    const cashUtility = 0.35 + 0.45 * t.loanLover; // 0.35 .. 0.80
+    // Smart bots realize loans = early cash advantage; higher intel → higher utility
+    const cashUtility = 0.25 + 0.25 * t.loanLover + 0.15 * t.intelligence;
     const debtAlready = (p.loans || []).reduce((a, l) => a + l.value, 0);
-    // HARD STOP: refuse loans if already deep in debt (intelligence-gated)
-    if (debtAlready >= 20 && t.intelligence >= 0.4) return 0;
-    if (debtAlready >= 30) return 0;
-    const debtPenalty = Math.min(1.0, debtAlready / 25); // discourage stacking
+    // Style-aware debt limits — smart bots can leverage one loan
+    const debtCap = style === 'LoanLover' ? 15 : 10;
+    if (debtAlready >= debtCap) return 0;
+    if (debtAlready >= 25) return 0;
+    const debtPenalty = Math.min(1.0, debtAlready / 14); // discourage stacking
     const willingnessFactor = (1 - debtPenalty) * cashUtility;
     // OPENING PHASE COOLDOWN: in first 3 rounds, slash loan interest
     const earlyCooldown = game.round <= 3 ? 0.55 : 1.0;
@@ -98,7 +100,7 @@ function botPickBid(p, game) {
     lotValue += valueForCount(myEstUnused[g] || 0);
   }
 
-  // Mission contribution
+  // Mission contribution — value progress, not just completion
   let missionBonus = 0;
   let oneAwayBonus = 0;
   for (const m of game.missions) {
@@ -106,23 +108,39 @@ function botPickBid(p, game) {
     if (meets(m, p.wonGems)) continue;
     const wouldBeWon = p.wonGems.concat(lot);
     if (meets(m, wouldBeWon)) {
-      missionBonus += m.score * (0.5 + 0.5 * t.missionFocus);
-    } else {
-      // One-away check
-      const myCounts = counts(p.wonGems);
-      if (m.type === 'TWO_SPECIFIC' || m.type === 'THREE_SPECIFIC') {
-        const missing = m.gems.filter(g => !myCounts[g]);
-        if (missing.length === 1 && lot.includes(missing[0])) {
-          oneAwayBonus += m.score * 0.5 * (0.4 + 0.6 * t.missionFocus);
-        }
-      } else if (m.type === 'FOUR_DIFFERENT') {
-        const types = new Set(p.wonGems);
-        if (types.size === 3 && lot.some(g => !types.has(g))) {
-          oneAwayBonus += m.score * 0.5 * (0.4 + 0.6 * t.missionFocus);
-        }
-      } else if (m.type === 'THREE_OF_A_KIND') {
-        const c = counts(p.wonGems);
-        for (const g of lot) if ((c[g] || 0) === 2) { oneAwayBonus += m.score * 0.4 * (0.4 + 0.6 * t.missionFocus); break; }
+      missionBonus += m.score * (0.55 + 0.5 * t.missionFocus);
+      continue;
+    }
+    const myCounts = counts(p.wonGems);
+    if (m.type === 'TWO_SPECIFIC' || m.type === 'THREE_SPECIFIC') {
+      const totalNeeded = m.gems.length;
+      const have = m.gems.filter(g => myCounts[g]).length;
+      const willGet = m.gems.filter(g => lot.includes(g)).length;
+      const newProgress = have + willGet;
+      const missing = totalNeeded - newProgress;
+      if (newProgress > have) {
+        // Progress made
+        if (missing === 0) oneAwayBonus += m.score * 0.6 * (0.4 + 0.6 * t.missionFocus);
+        else if (missing === 1) oneAwayBonus += m.score * 0.4 * (0.4 + 0.6 * t.missionFocus);
+        else oneAwayBonus += m.score * 0.2 * (0.4 + 0.6 * t.missionFocus);
+      }
+    } else if (m.type === 'FOUR_DIFFERENT') {
+      const types = new Set(p.wonGems);
+      const newTypes = new Set(p.wonGems.concat(lot));
+      const gained = newTypes.size - types.size;
+      if (gained > 0) {
+        const missing = 4 - newTypes.size;
+        if (missing <= 0) oneAwayBonus += m.score * 0.6 * (0.4 + 0.6 * t.missionFocus);
+        else if (missing === 1) oneAwayBonus += m.score * 0.4 * (0.4 + 0.6 * t.missionFocus);
+        else oneAwayBonus += m.score * 0.15 * gained * (0.4 + 0.6 * t.missionFocus);
+      }
+    } else if (m.type === 'THREE_OF_A_KIND') {
+      const c = counts(p.wonGems);
+      for (const g of lot) {
+        const had = c[g] || 0;
+        if (had === 2) { oneAwayBonus += m.score * 0.5 * (0.4 + 0.6 * t.missionFocus); break; }
+        else if (had === 1) { oneAwayBonus += m.score * 0.25 * (0.4 + 0.6 * t.missionFocus); break; }
+        c[g] = had + 1; // simulate stacking
       }
     }
   }
@@ -165,11 +183,16 @@ function botPickBid(p, game) {
   // Game progress
   const progress = Math.min(1, game.gemsAuctionedCount / TOTAL_GEM_AUCTIONS);
   const lotsRemaining = Math.max(1, TOTAL_GEM_AUCTIONS - game.gemsAuctionedCount);
-  const endgameUrgency = lotsRemaining <= 5 ? (1 + (5 - lotsRemaining) * 0.13 * t.intelligence) : 1.0;
-  const earlyDiscount = 0.75 + progress * 0.25;
+  const endgameUrgency = lotsRemaining <= 5 ? (1 + (5 - lotsRemaining) * 0.18 * t.intelligence) : 1.0;
+  const earlyDiscount = 0.78 + progress * 0.22;
+  // Cash-burn pressure: idle cash late = wasted score
+  const cashBurnRatio = lotsRemaining > 0 ? (p.money / (lotsRemaining * 7)) : 1;
+  const cashBurnMult = (progress >= 0.5 && cashBurnRatio > 1.3)
+    ? 1 + Math.min(0.30, (cashBurnRatio - 1.3) * 0.22) * t.intelligence
+    : 1.0;
 
   let base = lotValue * earlyDiscount + missionBonus + blockBonus + diversityBonus + oneAwayBonus - leakPenalty;
-  base *= endgameUrgency;
+  base *= endgameUrgency * cashBurnMult;
   base = Math.max(0, base);
 
   // Opponent bid modeling
@@ -180,25 +203,24 @@ function botPickBid(p, game) {
   const styleKey = String(style || '').toLowerCase();
   switch (styleKey) {
     case 'sniper': {
-      // Sniper SAVE-and-STRIKE: stay cheap most rounds, then strike with predator precision.
+      // Sniper: precise predator. Use opp model EVERY round to win at +1.
       const expectedValue = lotValue + missionBonus + oneAwayBonus + diversityBonus;
-      // Use opp model when reliable
-      if (predictedOppMax != null && game.bidHistory.length >= 3 && p.money >= 3) {
-        const target = Math.min(p.money, Math.ceil(predictedOppMax + 1 + r() * 2));
+      if (predictedOppMax != null && p.money >= 2) {
+        const target = Math.min(p.money, Math.ceil(predictedOppMax + 1 + r() * 1.5));
         const profit = expectedValue - target;
-        if (profit >= 2) {
+        if (profit >= 0) {
+          // Lock in the win
           return Math.max(1, target);
         }
       }
-      // High-value strike
-      const strikeWorthy = expectedValue >= 7 && p.money >= 4;
-      if (strikeWorthy && r() < (0.65 + 0.25 * t.aggression)) {
-        let strike = Math.floor(expectedValue * (0.85 + r() * 0.15));
+      // Big strike when value is high
+      const strikeWorthy = expectedValue >= 6 && p.money >= 3;
+      if (strikeWorthy && r() < (0.70 + 0.20 * t.aggression)) {
+        let strike = Math.floor(expectedValue * (0.88 + r() * 0.12));
         strike = Math.min(strike, p.money);
         return Math.max(2, strike);
       }
-      // Otherwise solid bid (Sniper isn't passive)
-      personalityMult = 0.78 + r() * 0.18;
+      personalityMult = 0.80 + r() * 0.18;
       break;
     }
     case 'wildcard':
@@ -216,6 +238,14 @@ function botPickBid(p, game) {
     case 'hoarder':
       // hoard cash early, strike hard late when gems are scarce
       personalityMult = (progress < 0.4 ? 0.75 : 1.05) + r() * 0.18;
+      break;
+    case 'banker':
+      // Calculated: bid hard when value clear, fold when not
+      personalityMult = 0.95 + r() * 0.15;
+      break;
+    case 'missionhunter':
+      // Pursue missions decisively
+      personalityMult = (missionBonus > 0 ? 1.10 : 0.85) + r() * 0.15;
       break;
   }
 
@@ -239,8 +269,10 @@ function botPickBid(p, game) {
   // Opportunity cost: smart bots refuse to overpay
   const totalValueToMe = lotValue + missionBonus + diversityBonus + oneAwayBonus + blockBonus * 0.5;
   if (t.intelligence >= 0.4) {
-    // Smarter = stricter margin (won't pay full value)
-    const margin = Math.max(0, Math.floor(t.intelligence * 2 - 0.5));
+    // Smarter = stricter margin
+    let margin = Math.max(0, Math.floor(t.intelligence * 1.5 - 0.3));
+    if (styleKey === 'missionhunter' && missionBonus > 5) margin = 0;
+    if (styleKey === 'aggressor') margin = 0;  // Aggressor accepts thin margins
     if (bid > totalValueToMe - margin) {
       bid = Math.max(0, Math.floor(totalValueToMe - margin));
     }
