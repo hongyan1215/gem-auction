@@ -557,18 +557,38 @@ function botPickBid(p, game) {
     bid = 2 + Math.floor(r() * Math.min(3, p.money - 2));
   }
 
-  // ============ OVERPAY GUARD: never bid more than ~115% of expected value ============
-  // Stops rich bots from dumping cash on low-value lots just because they can.
-  // Jackpot lots and Loan cards are exempt (Loan: bid IS interest, not a price).
+  // ============ OVERPAY GUARD: cap bid at ~130% of expected value ============
+  // Loosened (1.15→1.30) to add strategic noise — bots are too readable when
+  // every bid lives in [EV*0.85, EV*1.15]. Jackpots & Loan cards exempt.
   const _isJackpot = (missionBonus >= 10) || (lotValue >= 16) || (card.kind === 'INVEST' && (card.value || 0) >= 10);
   if (!_isJackpot && card.kind !== 'LOAN') {
     const ev = lotValue + missionBonus + diversityBonus + oneAwayBonus;
     if (ev > 0) {
-      const hardCap = Math.ceil(ev * 1.15) + 1;
+      const hardCap = Math.ceil(ev * 1.30) + 1;
       if (bid > hardCap) bid = hardCap;
     } else if (ev <= 0 && bid > 1) {
-      // Worthless lot: token bid only
       bid = Math.min(bid, 1);
+    }
+  }
+
+  // ============ UNPREDICTABILITY LAYER ============
+  // 1) Per-bot noise (±20%) so two bots with same archetype don't bid identically
+  // 2) Bluff dice (8%): occasionally OVERBID modestly, or PASS on a juicy lot
+  if (!_isJackpot && card.kind !== 'LOAN' && bid > 0) {
+    const noise = 1 + (r() - 0.5) * 0.40; // 0.80..1.20
+    bid = Math.max(0, Math.round(bid * noise));
+
+    const bluffChance = 0.08;
+    if (r() < bluffChance && p.money >= 3) {
+      const ev = Math.max(1, lotValue + missionBonus + diversityBonus + oneAwayBonus);
+      if (r() < 0.50) {
+        // OVERBID bluff: small jam, capped at EV*1.4 — not money-dump
+        const jam = Math.min(p.money, Math.ceil(ev * (1.20 + r() * 0.20)));
+        bid = Math.max(bid, jam);
+      } else {
+        // SANDBAG bluff: pass / minimal bid even on decent lot
+        bid = Math.min(bid, 1 + Math.floor(r() * 2));
+      }
     }
   }
 
