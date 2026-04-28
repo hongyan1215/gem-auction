@@ -12,7 +12,6 @@ const BOT_ARCHETYPES = {
   MissionHunter: { aggression: 1.15, missionFocus: 1.40, intelligence: 1.00, signalAware: 0.90, loanLover: 0.55, investLover: 0.70 },
   LoanLover:     { aggression: 0.95, missionFocus: 0.70, intelligence: 0.90, signalAware: 0.75, loanLover: 0.65, investLover: 0.80 },
   Wildcard:      { aggression: 1.15, missionFocus: 0.95, intelligence: 1.10, signalAware: 1.10, loanLover: 0.85, investLover: 0.90 },
-  Profiler:      { aggression: 1.05, missionFocus: 0.85, intelligence: 1.20, signalAware: 1.25, loanLover: 0.50, investLover: 0.85 },
   Newbie:        { aggression: 0.85, missionFocus: 0.55, intelligence: 0.55, signalAware: 0.50, loanLover: 0.50, investLover: 0.55 },
 };
 const STYLE_KEYS = Object.keys(BOT_ARCHETYPES);
@@ -383,29 +382,10 @@ function botPickBid(p, game) {
   let base = lotValue * earlyDiscount + missionBonus + blockBonus + diversityBonus + oneAwayBonus - leakPenalty;
   base *= endgameUrgency * cashBurnMult;
 
-  // ANTI-HUMAN GANG-UP: every bot tracks the strongest human at the table.
-  // If a human is leading (by visible score+money) and could plausibly win this lot,
-  // add a small uplift so bots collectively raise the price on them.
-  // Effect is gentle (max ~12% bid increase) and gated by intelligence × signalAware
-  // so dumb bots still play naturally.
+  // ANTI-HUMAN GANG-UP: DISABLED (user found it actually made bots easier to beat —
+  // they bid up everything human touched even when human was bluffing; now bots play
+  // straight EV against humans).
   let humanThreatMult = 1.0;
-  if (t.intelligence > 0.4 && t.signalAware > 0.3) {
-    let topHumanPower = -Infinity;
-    let myPower = p.money + (p.score || 0) + counts(p.wonGems) ? p.wonGems.length * 4 : 0;
-    myPower = p.money + (p.score || 0) + p.wonGems.length * 4;
-    for (const opp of game.players) {
-      if (opp.id === p.id || opp.isBot) continue;
-      const power = opp.money + (opp.score || 0) + opp.wonGems.length * 4;
-      if (power > topHumanPower) topHumanPower = power;
-    }
-    if (topHumanPower > -Infinity) {
-      // How much the human leads me by (normalised to ~20)
-      const lead = (topHumanPower - myPower) / 20;
-      // Lead range maps to 0..0.12 multiplier uplift
-      const uplift = Math.max(0, Math.min(0.12, 0.06 + lead * 0.08)) * t.intelligence;
-      humanThreatMult = 1 + uplift;
-    }
-  }
   base *= humanThreatMult;
   base = Math.max(0, base);
 
@@ -449,7 +429,7 @@ function botPickBid(p, game) {
       personalityMult = 1.00 + r() * 0.05;
       break;
     }
-    case 'profiler': {
+    case 'profiler_REMOVED': {
       // OBSERVER: builds a per-opponent model from bid history on similar lots.
       // For each opp: avg their past bids on lots of THIS kind, scale by their
       // current cash vs their cash-then proxy, then take the max.
