@@ -304,23 +304,39 @@ function botPickBid(p, game) {
     }
   }
 
-  // Block opponents close to missions (signalAware)
+  // Block opponents close to missions (signalAware) — DENIAL PLAY
+  // Cap denial uplift so we don't burn cash chasing every block.
   let blockBonus = 0;
   if (t.signalAware > 0.4) {
+    let totalDenial = 0;
     for (const opp of game.players) {
       if (opp.id === p.id) continue;
       for (const m of game.missions) {
         if (m.completedBy) continue;
         if (meets(m, opp.wonGems)) continue;
-        const oppCounts = counts(opp.wonGems);
-        if (m.type === 'TWO_SPECIFIC' || m.type === 'THREE_SPECIFIC') {
-          const missing = m.gems.filter(g => !oppCounts[g]);
-          if (missing.length === 1 && lot.includes(missing[0])) {
-            blockBonus += m.score * 0.25 * t.signalAware;
+        // Would lot complete the mission for opp?
+        const oppPlus = opp.wonGems.concat(lot);
+        if (!meets(m, oppPlus)) {
+          // Not a completion, but maybe they're 1-away after we let them have it
+          const oppCounts = counts(opp.wonGems);
+          if (m.type === 'TWO_SPECIFIC' || m.type === 'THREE_SPECIFIC') {
+            const missing = m.gems.filter(g => !oppCounts[g]);
+            if (missing.length === 1 && lot.includes(missing[0])) {
+              totalDenial += m.score * 0.20 * t.signalAware; // small nudge
+            }
           }
+          continue;
         }
+        // YES — lot completes opp's mission. Denial value = m.score * urgency factor.
+        // Urgency lower if opp has low cash (they might not afford this lot anyway).
+        const oppCash = opp.money;
+        const urgency = Math.min(1.0, oppCash / Math.max(1, lotValue + 2));
+        const denialValue = m.score * urgency * 0.55 * t.signalAware;
+        totalDenial += denialValue;
       }
     }
+    // CAP: denial bonus can't exceed 6 (≈half of largest mission). Stops cash burn.
+    blockBonus = Math.min(6, totalDenial);
   }
 
   // Diversity (have many of one type already, less marginal value)
@@ -344,10 +360,22 @@ function botPickBid(p, game) {
   const lotsRemaining = Math.max(1, TOTAL_GEM_AUCTIONS - game.gemsAuctionedCount);
   const endgameUrgency = lotsRemaining <= 5 ? (1 + (5 - lotsRemaining) * 0.18 * t.intelligence) : 1.0;
   const earlyDiscount = 0.78 + progress * 0.22;
-  // Cash-burn pressure: idle cash late = wasted score
+  // Cash-burn pressure (E): idle cash late = wasted score. Apply to ALL bots once
+  // we're past mid-game, but FLOOR it — if opponents are already broke, don't dump
+  // (otherwise everyone hits 0 and a human just wins at bid=1).
   const cashBurnRatio = lotsRemaining > 0 ? (p.money / (lotsRemaining * 7)) : 1;
-  const cashBurnMult = (progress >= 0.5 && cashBurnRatio > 1.3)
-    ? 1 + Math.min(0.30, (cashBurnRatio - 1.3) * 0.22) * t.intelligence
+  let avgOppCash = 0; let oppN = 0;
+  for (const opp of game.players) {
+    if (opp.id === p.id) continue;
+    avgOppCash += opp.money; oppN++;
+  }
+  avgOppCash = oppN > 0 ? avgOppCash / oppN : 20;
+  // Relative-richness factor: 1.0 if I'm 2× avg opp, 0 if I'm at/below avg.
+  const richness = Math.max(0, Math.min(1, (p.money - avgOppCash) / Math.max(4, avgOppCash)));
+  // Vacuum guard: if avg opp already < 4, the table is broke; don't pour gas.
+  const vacuumGuard = avgOppCash < 4 ? 0.0 : 1.0;
+  const cashBurnMult = (progress >= 0.45 && cashBurnRatio > 1.2)
+    ? 1 + Math.min(0.32, (cashBurnRatio - 1.2) * 0.24) * t.intelligence * (0.4 + 0.6 * richness) * vacuumGuard
     : 1.0;
 
   let base = lotValue * earlyDiscount + missionBonus + blockBonus + diversityBonus + oneAwayBonus - leakPenalty;
@@ -687,16 +715,70 @@ function _predictOppMax(p, game, card, lot, t) {
   return maxPred;
 }
 
-// Reveal the gem with the highest count among my hiddens (revealing redundant info)
+// Smart reveal: choose hidden gem to leak that minimises info gain to opponents.
+// Score per candidate gem g = -(reveal hurts my future V(g)) + (already public a lot → little info)
+//                            + (cheater bonus: misleads opps' V estimate to my benefit)
+// Tie-break: prefer the gem I have the MOST copies of in hiddens (redundant).
 function botPickReveal(p, game) {
   if (!p.hiddenGems.length) return null;
-  const c = counts(p.hiddenGems);
-  let best = p.hiddenGems[0];
-  let bestCount = -1;
-  for (const g of p.hiddenGems) {
-    if (c[g] > bestCount) { bestCount = c[g]; best = g; }
+  const myHiddenCounts = counts(p.hiddenGems);
+  const uniqueCandidates = Array.from(new Set(p.hiddenGems));
+
+  // Public visibility per type: revealedGems across all players + market + auctionPool
+  const publicCounts = {};
+  for (const t of GEM_TYPES) publicCounts[t] = 0;
+  for (const pl of game.players) for (const g of pl.revealedGems) publicCounts[g]++;
+  for (const g of (game.market || [])) publicCounts[g]++;
+  // auctionPool is unknown to opps but reveals don't change pool
+
+  // True unused count per type (only cheaters use this)
+  const trueUnused = {};
+  for (const t of GEM_TYPES) trueUnused[t] = 0;
+  for (const pl of game.players) {
+    for (const g of pl.hiddenGems) trueUnused[g]++;
+    for (const g of pl.revealedGems) trueUnused[g]++;
   }
-  return best;
+
+  const style = String((p.profile && p.profile.style) || '').toLowerCase();
+  const isCheater = (style === 'wildcard' || style === 'sniper');
+
+  let bestGem = uniqueCandidates[0];
+  let bestScore = -Infinity;
+  for (const g of uniqueCandidates) {
+    // 1) "I have many copies in hidden" → safer to reveal one (information loss diluted)
+    const myCount = myHiddenCounts[g];
+    let score = myCount * 2.0;
+
+    // 2) Already very public → reveal adds little new info (good)
+    score += publicCounts[g] * 1.5;
+
+    // 3) My OWN final-V damage if this type's true count is HIGH already → revealing
+    //    1 more barely changes V (it caps at 20 anyway). Prefer types where unused>=4.
+    if (trueUnused[g] >= 4) score += 2.0;
+
+    // 4) CHEATER MISDIRECTION: reveal a gem whose true V is LOW but opps think it's HIGH.
+    //    Why? Opps will dump cash on lots they THINK are valuable; revealing this lowers
+    //    their estimate (they see one more in unused), making them bid LESS — but the gem
+    //    was already low value to me anyway. So I lose nothing and they bid less.
+    //    Reverse: if true V is HIGH and opps don't know yet, hiding (not revealing) is best.
+    if (isCheater) {
+      const trueV = Math.min(20, 4 * trueUnused[g]);
+      // Opps' visible-only count
+      const oppVisible = publicCounts[g];
+      const oppEstUnused = oppVisible + 2; // rough: assume 2 hidden of this type on avg
+      const oppEstV = Math.min(20, 4 * oppEstUnused);
+      // Misdirection: reveal types where (trueV is low) AND (oppEst is similar/higher)
+      // → revealing makes opp realise they're cheap; they bid less; ok for me since trueV low.
+      // Conversely AVOID revealing types where trueV is HIGH but oppEst is LOW (we'd give away the secret).
+      const misdirectGain = (oppEstV - trueV) * 0.4;
+      score += misdirectGain;
+      // STRONG penalty: never reveal a high-true-V type that opps underestimate
+      if (trueV >= 12 && oppEstV <= trueV - 4) score -= 6.0;
+    }
+
+    if (score > bestScore) { bestScore = score; bestGem = g; }
+  }
+  return bestGem;
 }
 
 module.exports = { botPickBid, botPickReveal, BOT_ARCHETYPES, rollTraits, makeBotProfile, randomBotName };
