@@ -8,9 +8,9 @@ const STARTING_MONEY = 20;
 const HIDDEN_GEMS_PER_PLAYER = 3;
 const TOTAL_GEM_AUCTIONS = 15;
 
-const BID_DURATION_MS = 10_000;
-const REVEAL_DURATION_MS = 8_000;
-const RESOLUTION_VIEW_MS = 4_000;
+const BID_DURATION_MS = 15_000;
+const REVEAL_DURATION_MS = 10_000;
+const RESOLUTION_VIEW_MS = 5_000;
 
 // Card deck spec
 function buildDeck() {
@@ -294,7 +294,7 @@ class GameState {
       this.market.push(this.auctionPool.shift());
     }
 
-    if (this.gemsAuctionedCount >= TOTAL_GEM_AUCTIONS || this.deck.length === 0) {
+    if (this.gemsAuctionedCount >= TOTAL_GEM_AUCTIONS) {
       this._endGame();
       return;
     }
@@ -309,18 +309,28 @@ class GameState {
     this.currentLot = [];
     this.currentCard = null;
 
-    // Draw card
+    // Draw card. If deck empty but gems still left, synthesize gem-1 cards.
     let card = this.deck.shift();
-    if (!card) { this._endGame(); return; }
+    if (!card) {
+      if (this.gemsAuctionedCount < TOTAL_GEM_AUCTIONS && (this.market.length > 0 || this.auctionPool.length > 0)) {
+        card = { kind: 'AUCTION_GEM', size: 1, synthetic: true };
+      } else {
+        this._endGame();
+        return;
+      }
+    }
 
-    // If gem card but no market gems → skip card, draw next non-gem? We draw next.
-    // Per spec: AUCTION_2_GEMS with only 1 in pool → only 1.
-    while (card.kind === 'AUCTION_GEM' && this.market.length === 0 && this.deck.length > 0) {
+    // Skip gem cards if no market gems available
+    while (card.kind === 'AUCTION_GEM' && this.market.length === 0 && this.auctionPool.length === 0 && this.deck.length > 0) {
       card = this.deck.shift();
     }
     this.currentCard = card;
 
     if (card.kind === 'AUCTION_GEM') {
+      // Ensure market has gems
+      while (this.market.length < (card.size || 1) && this.auctionPool.length > 0) {
+        this.market.push(this.auctionPool.shift());
+      }
       if (card.size === 1) {
         if (this.market.length > 0) this.currentLot = [this.market.shift()];
       } else {
@@ -354,17 +364,19 @@ class GameState {
       const wonCounts = counts(p.wonGems);
       const gemScore = Object.entries(wonCounts).reduce((a, [t, c]) => a + c * (finalValue[t] || 0), 0);
       const investBonus = p.investments.reduce((a, i) => a + i.value, 0);
+      const investRefund = p.investments.reduce((a, i) => a + i.paid, 0);
       const loanPenalty = p.loans.reduce((a, l) => a + l.value, 0);
-      const total = p.money + gemScore + investBonus - loanPenalty + p.score;
+      const finalMoney = p.money + investRefund;
+      const total = finalMoney + gemScore + investBonus - loanPenalty + p.score;
       return {
         id: p.id, name: p.name, seat: p.seat,
-        money: p.money,
+        money: finalMoney,
         wonGems: p.wonGems.slice(),
         revealedGems: p.revealedGems.slice(),
         investments: p.investments.slice(),
         loans: p.loans.slice(),
         missionScore: p.score,
-        gemScore, investBonus, loanPenalty,
+        gemScore, investBonus, investRefund, loanPenalty,
         total,
       };
     }).sort((a, b) => b.total - a.total);
@@ -373,6 +385,20 @@ class GameState {
 
   // Public snapshot for a viewer
   publicSnapshot(viewerId = null) {
+    // Bids exposed only after BIDDING phase ends
+    const showBids = this.phase === 'AWAITING_REVEAL' || this.phase === 'GAME_OVER';
+    const bidsPublic = {};
+    if (showBids) {
+      for (const [pid, amt] of this.bids.entries()) bidsPublic[pid] = amt;
+    }
+    // Tie-break order from lastWinnerSeat (clockwise, starting at left+1)
+    let tieOrder = null;
+    if (this.lastWinnerSeat != null) {
+      tieOrder = [];
+      for (let d = 1; d <= PLAYERS; d++) {
+        tieOrder.push((this.lastWinnerSeat + d) % PLAYERS);
+      }
+    }
     return {
       phase: this.phase,
       round: this.round,
@@ -387,14 +413,16 @@ class GameState {
         money: p.money,
         wonGems: p.wonGems.slice(),
         revealedGems: p.revealedGems.slice(),
-        investments: p.investments.length,
-        loans: p.loans.length,
+        investments: p.investments.slice(),
+        loans: p.loans.slice(),
         score: p.score,
         hiddenCount: p.hiddenGems.length,
         // Hidden gems only revealed to self
         hiddenGems: viewerId === p.id ? p.hiddenGems.slice() : null,
         hasBid: this.bids.has(p.id),
       })),
+      bidsPublic,
+      tieOrder,
       winner: this.winner,
       lastWinnerSeat: this.lastWinnerSeat,
       gemsAuctionedCount: this.gemsAuctionedCount,
