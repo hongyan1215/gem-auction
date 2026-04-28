@@ -108,7 +108,9 @@ function botPickBid(p, game) {
     if (meets(m, p.wonGems)) continue;
     const wouldBeWon = p.wonGems.concat(lot);
     if (meets(m, wouldBeWon)) {
-      missionBonus += m.score * (0.55 + 0.5 * t.missionFocus);
+      // COMPLETION = jackpot. Value the full score (not 55%).
+      // MissionHunter values it at ~110% to reflect "must-have" mentality.
+      missionBonus += m.score * (0.85 + 0.55 * t.missionFocus);
       continue;
     }
     const myCounts = counts(p.wonGems);
@@ -119,10 +121,11 @@ function botPickBid(p, game) {
       const newProgress = have + willGet;
       const missing = totalNeeded - newProgress;
       if (newProgress > have) {
-        // Progress made
-        if (missing === 0) oneAwayBonus += m.score * 0.6 * (0.4 + 0.6 * t.missionFocus);
-        else if (missing === 1) oneAwayBonus += m.score * 0.4 * (0.4 + 0.6 * t.missionFocus);
-        else oneAwayBonus += m.score * 0.2 * (0.4 + 0.6 * t.missionFocus);
+        // Progress made — boosted weights, MissionHunter cares MORE
+        const focusMul = 0.4 + 0.6 * t.missionFocus;
+        if (missing === 0) oneAwayBonus += m.score * 0.65 * focusMul;
+        else if (missing === 1) oneAwayBonus += m.score * 0.40 * focusMul;
+        else oneAwayBonus += m.score * 0.20 * focusMul;
       }
     } else if (m.type === 'FOUR_DIFFERENT') {
       const types = new Set(p.wonGems);
@@ -130,16 +133,18 @@ function botPickBid(p, game) {
       const gained = newTypes.size - types.size;
       if (gained > 0) {
         const missing = 4 - newTypes.size;
-        if (missing <= 0) oneAwayBonus += m.score * 0.6 * (0.4 + 0.6 * t.missionFocus);
-        else if (missing === 1) oneAwayBonus += m.score * 0.4 * (0.4 + 0.6 * t.missionFocus);
-        else oneAwayBonus += m.score * 0.15 * gained * (0.4 + 0.6 * t.missionFocus);
+        const focusMul = 0.4 + 0.6 * t.missionFocus;
+        if (missing <= 0) oneAwayBonus += m.score * 0.65 * focusMul;
+        else if (missing === 1) oneAwayBonus += m.score * 0.40 * focusMul;
+        else oneAwayBonus += m.score * 0.18 * gained * focusMul;
       }
     } else if (m.type === 'THREE_OF_A_KIND') {
       const c = counts(p.wonGems);
+      const focusMul = 0.4 + 0.6 * t.missionFocus;
       for (const g of lot) {
         const had = c[g] || 0;
-        if (had === 2) { oneAwayBonus += m.score * 0.5 * (0.4 + 0.6 * t.missionFocus); break; }
-        else if (had === 1) { oneAwayBonus += m.score * 0.25 * (0.4 + 0.6 * t.missionFocus); break; }
+        if (had === 2) { oneAwayBonus += m.score * 0.55 * focusMul; break; }
+        else if (had === 1) { oneAwayBonus += m.score * 0.25 * focusMul; break; }
         c[g] = had + 1; // simulate stacking
       }
     }
@@ -203,20 +208,31 @@ function botPickBid(p, game) {
   const styleKey = String(style || '').toLowerCase();
   switch (styleKey) {
     case 'sniper': {
-      // Sniper: precise predator. Use opp model EVERY round to win at +1.
+      // Sniper: precise predator. Snipe at +1 over predicted opp max.
+      // Even without history, estimate from opp cash and intel-cap.
       const expectedValue = lotValue + missionBonus + oneAwayBonus + diversityBonus;
-      if (predictedOppMax != null && p.money >= 2) {
-        const target = Math.min(p.money, Math.ceil(predictedOppMax + 1 + r() * 1.5));
+      let predOpp = predictedOppMax;
+      if (predOpp == null) {
+        // Fall back: assume best opp will bid up to 50% of their money
+        let maxOppCash = 0;
+        for (const opp of game.players) {
+          if (opp.id === p.id) continue;
+          if (opp.money > maxOppCash) maxOppCash = opp.money;
+        }
+        predOpp = maxOppCash * 0.5;
+      }
+      if (p.money >= 2) {
+        const target = Math.min(p.money, Math.ceil(predOpp + 1 + r() * 1.2));
         const profit = expectedValue - target;
-        if (profit >= 0) {
+        if (profit >= 0.5) {
           // Lock in the win
           return Math.max(1, target);
         }
       }
       // Big strike when value is high
       const strikeWorthy = expectedValue >= 6 && p.money >= 3;
-      if (strikeWorthy && r() < (0.70 + 0.20 * t.aggression)) {
-        let strike = Math.floor(expectedValue * (0.88 + r() * 0.12));
+      if (strikeWorthy && r() < (0.75 + 0.20 * t.aggression)) {
+        let strike = Math.floor(expectedValue * (0.90 + r() * 0.10));
         strike = Math.min(strike, p.money);
         return Math.max(2, strike);
       }
@@ -234,10 +250,14 @@ function botPickBid(p, game) {
       // Cash discipline: don't bleed below 8 unless huge value
       if (p.money < 8 && base < 14) personalityMult = 0.55 + r() * 0.2;
       // Aggressor still uses opp-aware sniping below
+      else personalityMult = t.aggression * (0.98 + r() * 0.12);
       break;
     case 'hoarder':
-      // hoard cash early, strike hard late when gems are scarce
-      personalityMult = (progress < 0.4 ? 0.75 : 1.05) + r() * 0.18;
+      // Hoard early, then unload aggressively. Esp value gem stacks for V(n).
+      // Late-game: convert cash to anything that holds value.
+      personalityMult = (progress < 0.4 ? 0.78 : 1.18) + r() * 0.15;
+      // Hoarder also values gems higher because of their endgame V(n) leverage
+      if (progress >= 0.4) base *= 1.10;
       break;
     case 'banker':
       // Calculated: bid hard when value clear, fold when not

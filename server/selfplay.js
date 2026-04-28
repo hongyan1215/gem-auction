@@ -64,20 +64,51 @@ for (let i = 0; i < N; i++) {
 
   results.forEach((r, rank) => {
     const style = idToStyle[r.id];
-    if (!stats[style]) stats[style] = { games: 0, wins: 0, totalScore: 0, totalRank: 0 };
-    stats[style].games++;
-    if (rank === 0) stats[style].wins++;
-    stats[style].totalScore += r.total;
-    stats[style].totalRank += (rank + 1);
+    if (!stats[style]) stats[style] = {
+      games: 0, wins: 0, totalScore: 0, totalRank: 0,
+      gems: 0, money: 0, missions: 0, investNet: 0, loanNet: 0,
+      loansTaken: 0, investsWon: 0, gemLotsWon: 0,
+    };
+    const s = stats[style];
+    s.games++;
+    if (rank === 0) s.wins++;
+    s.totalScore += r.total;
+    s.totalRank += (rank + 1);
+    s.gems += r.gemScore || 0;
+    s.money += r.money || 0;
+    s.missions += r.missionScore || 0;
+    s.investNet += (r.investBonus || 0); // bonus is endgame +5/+10; refund returned to money
+    s.loanNet += -(r.loanPenalty || 0);  // negative penalty
+    // Count from player object in game
+    const player = game.players.find(p => p.id === r.id);
+    if (player) {
+      s.loansTaken += (player.loans || []).length;
+      s.investsWon += (player.investments || []).length;
+      s.gemLotsWon += (player.wonGems || []).length;
+    }
   });
 }
 
 console.log(`=== Self-play results over ${N} games ===`);
-console.log('Archetype'.padEnd(16) + 'Games'.padEnd(8) + 'WinRate'.padEnd(10) + 'AvgScore'.padEnd(11) + 'AvgRank');
+const hdr = ['Archetype','Games','WinRate','AvgScore','AvgRank','Gem','Money','Mis','InvN','LoanN','Loans','Inv','Gems'];
+const widths = [14, 6, 8, 9, 8, 6, 7, 6, 6, 7, 7, 6, 6];
+console.log(hdr.map((h, i) => h.padEnd(widths[i])).join(''));
 const rows = Object.entries(stats).sort((a, b) => b[1].wins / b[1].games - a[1].wins / a[1].games);
 for (const [style, s] of rows) {
-  const wr = (s.wins / s.games * 100).toFixed(1) + '%';
-  const sc = (s.totalScore / s.games).toFixed(1);
-  const rk = (s.totalRank / s.games).toFixed(2);
-  console.log(style.padEnd(16) + String(s.games).padEnd(8) + wr.padEnd(10) + sc.padEnd(11) + rk);
+  const cells = [
+    style,
+    String(s.games),
+    (s.wins / s.games * 100).toFixed(1) + '%',
+    (s.totalScore / s.games).toFixed(1),
+    (s.totalRank / s.games).toFixed(2),
+    (s.gems / s.games).toFixed(1),
+    (s.money / s.games).toFixed(1),
+    (s.missions / s.games).toFixed(1),
+    (s.investNet / s.games).toFixed(1),
+    (s.loanNet / s.games).toFixed(1),
+    (s.loansTaken / s.games).toFixed(2),
+    (s.investsWon / s.games).toFixed(2),
+    (s.gemLotsWon / s.games).toFixed(1),
+  ];
+  console.log(cells.map((c, i) => c.padEnd(widths[i])).join(''));
 }
