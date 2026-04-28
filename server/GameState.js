@@ -298,6 +298,8 @@ class GameState {
       this._endGame();
       return;
     }
+    // Mark intermediate phase so reveal timer / auto-reveal cannot re-fire on this winner.
+    this.phase = 'RESOLVING';
     setTimeout(() => this._beginNextRound(), RESOLUTION_VIEW_MS);
   }
 
