@@ -66,9 +66,15 @@ class Room {
     }
     this.game = new GameState(playerSpecs);
     this.game.startGame();
-    this._scheduleBidTimer();
     this._broadcast();
-    this._maybeBotTurns();
+    // Server-authoritative 10s pregame countdown — all clients sync from snap.pregameDeadline
+    clearTimeout(this.pregameTimer);
+    this.pregameTimer = setTimeout(() => {
+      this.game.beginFirstRound();
+      this._scheduleBidTimer();
+      this._broadcast();
+      this._maybeBotTurns();
+    }, 10000);
   }
 
   _scheduleBidTimer() {

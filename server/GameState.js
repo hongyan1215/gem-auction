@@ -126,7 +126,8 @@ class GameState {
 
     // --- Round state
     this.round = 0;
-    this.phase = 'WAITING'; // WAITING | DRAW | BIDDING | RESOLVING | AWAITING_REVEAL | GAME_OVER
+    this.phase = 'WAITING'; // WAITING | PREGAME | DRAW | BIDDING | RESOLVING | AWAITING_REVEAL | GAME_OVER
+    this.pregameDeadline = null;
     this.currentCard = null;
     this.currentLot = []; // [gemType] for AUCTION_GEM; empty for INVEST/LOAN
     this.bids = new Map(); // playerId -> amount (hidden during bidding)
@@ -144,6 +145,13 @@ class GameState {
 
   startGame() {
     if (this.phase !== 'WAITING') return;
+    this.phase = 'PREGAME';
+    this.pregameDeadline = Date.now() + 10000;
+  }
+
+  beginFirstRound() {
+    if (this.phase !== 'PREGAME') return;
+    this.pregameDeadline = null;
     this._beginNextRound();
   }
 
@@ -408,6 +416,7 @@ class GameState {
       round: this.round,
       bidDeadline: this.bidDeadline,
       revealDeadline: this.revealDeadline,
+      pregameDeadline: this.pregameDeadline,
       currentCard: this.currentCard,
       currentLot: this.currentLot.slice(),
       market: this.market.slice(),

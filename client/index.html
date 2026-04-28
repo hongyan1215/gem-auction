@@ -466,13 +466,15 @@ function RevealPicker({ me, onReveal, deadline }) {
   );
 }
 
-function OpeningOverlay({ snap, onClose }) {
-  const [secs, setSecs] = useState(10);
+function OpeningOverlay({ snap }) {
+  const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    if (secs <= 0) { onClose(); return; }
-    const t = setTimeout(() => setSecs(s => s - 1), 1000);
-    return () => clearTimeout(t);
-  }, [secs]);
+    const t = setInterval(() => setNow(Date.now()), 200);
+    return () => clearInterval(t);
+  }, []);
+  const remainMs = Math.max(0, (snap.pregameDeadline || 0) - now);
+  const secs = Math.ceil(remainMs / 1000);
+  const pct = Math.max(0, Math.min(100, (remainMs / 10000) * 100));
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
       <div className="card-bg rounded-xl p-6 max-w-2xl w-full ring-2 ring-amber-400/60">
@@ -485,12 +487,12 @@ function OpeningOverlay({ snap, onClose }) {
           <div>💰 起始 $20、3 顆隱藏寶石｜⏱️ 每回合 15 秒盲標｜🏆 拍完 15 顆寶石結算</div>
           <div>📊 寶石分數 V(n)=min(4n,20)，n = 沒被拍走的同色數</div>
         </div>
-        <div className="w-full h-1.5 bg-slate-700 rounded mb-2 overflow-hidden">
-          <div className="h-full bg-amber-400 transition-all duration-1000 ease-linear" style={{ width: `${(secs/10)*100}%` }} />
+        <div className="w-full h-2 bg-slate-700 rounded mb-2 overflow-hidden">
+          <div className="h-full bg-amber-400 transition-all duration-200 ease-linear" style={{ width: `${pct}%` }} />
         </div>
-        <button onClick={onClose} className="w-full py-2 bg-amber-500 text-slate-900 font-bold rounded">
-          開始遊戲（{secs}s 自動開始）
-        </button>
+        <div className="text-center py-2 bg-amber-500/20 text-amber-200 font-bold rounded ring-1 ring-amber-400/40">
+          遊戲將於 {secs} 秒後開始
+        </div>
       </div>
     </div>
   );
@@ -502,9 +504,7 @@ function Game({ snap, socket, myId }) {
   const winnerSeat = snap.winner ? snap.winner.seat : null;
   const showBids = snap.phase === 'AWAITING_REVEAL' || snap.phase === 'RESOLVING';
   const bidOf = (pid) => (showBids && snap.bidsPublic ? (snap.bidsPublic[pid] != null ? snap.bidsPublic[pid] : null) : null);
-  const [showOpening, setShowOpening] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
-  useEffect(() => { if (snap.round > 1) setShowOpening(false); }, [snap.round]);
 
   const onBid = (amount) => socket.emit('submitBid', { amount });
   const onReveal = (gem) => socket.emit('reveal', { gem });
@@ -522,7 +522,7 @@ function Game({ snap, socket, myId }) {
 
   return (
     <div className="grid grid-cols-12 gap-4 max-w-7xl mx-auto p-4">
-      {showOpening && snap.round === 1 && <OpeningOverlay snap={snap} onClose={() => setShowOpening(false)} />}
+      {snap.phase === 'PREGAME' && <OpeningOverlay snap={snap} />}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
       <button onClick={() => setShowHelp(true)} className="fixed bottom-4 right-4 z-40 px-4 py-2 rounded-full bg-amber-500/90 hover:bg-amber-400 text-slate-900 font-bold shadow-lg ring-2 ring-amber-300/50" title="開啟規則速查 (?)">📖 規則</button>
       {/* Top: opponents */}
