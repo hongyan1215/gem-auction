@@ -208,7 +208,8 @@ class GameState {
     if (idx < 0) return { ok: false, reason: 'no_such_gem' };
     p.hiddenGems.splice(idx, 1);
     p.revealedGems.push(gemType);
-    this._postResolve();
+    // Manual reveal: short transition to next round (no need to wait full RESOLUTION_VIEW_MS)
+    this._postResolve(1200);
     return { ok: true };
   }
 
@@ -288,7 +289,7 @@ class GameState {
     }
   }
 
-  _postResolve() {
+  _postResolve(delayMs = RESOLUTION_VIEW_MS) {
     // Refill market from auctionPool to size 2 (only if a gem was taken)
     while (this.market.length < 2 && this.auctionPool.length > 0) {
       this.market.push(this.auctionPool.shift());
@@ -300,7 +301,8 @@ class GameState {
     }
     // Mark intermediate phase so reveal timer / auto-reveal cannot re-fire on this winner.
     this.phase = 'RESOLVING';
-    setTimeout(() => this._beginNextRound(), RESOLUTION_VIEW_MS);
+    this.nextRoundAt = Date.now() + delayMs;
+    setTimeout(() => this._beginNextRound(), delayMs);
   }
 
   _beginNextRound() {

@@ -227,41 +227,42 @@ function PlayerCard({ p, isMe, isWinner, onReveal, canReveal, bidShown }) {
 
 function BidInput({ snap, me, onSubmit }) {
   const [amt, setAmt] = useState(0);
-  const [submitted, setSubmitted] = useState(null);
-  useEffect(() => { setSubmitted(null); setAmt(0); }, [snap.round]);
+  const [lastSent, setLastSent] = useState(null);
+  useEffect(() => { setLastSent(null); setAmt(0); }, [snap.round]);
   const max = me ? me.money : 0;
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 200); return () => clearInterval(id); }, []);
   const remain = Math.max(0, snap.bidDeadline - now);
   const urgent = remain < 4000;
-  const submit = () => { onSubmit(amt); setSubmitted(amt); };
+  const submit = () => { onSubmit(amt); setLastSent(amt); };
+  const dirty = lastSent != null && lastSent !== amt;
   return (
     <div className={'card-bg rounded-lg p-4 transition-all relative ' + (urgent ? 'ring-2 ring-rose-500 animate-pulse' : 'ring-2 ring-amber-400/30')}>
-      {snap.round === 1 && submitted == null && (
-        <div className="absolute -top-3 left-4 px-2 py-0.5 bg-amber-400 text-slate-900 text-xs font-bold rounded shadow animate-bounce">👇 拉滑桿出價，然後按確認</div>
+      {snap.round === 1 && lastSent == null && (
+        <div className="absolute -top-3 left-4 px-2 py-0.5 bg-amber-400 text-slate-900 text-xs font-bold rounded shadow animate-bounce">👇 拉滑桿出價，然後按確認（時限內可隨時改）</div>
       )}
       <div className="flex justify-between items-center mb-2">
         <div className="text-xs uppercase tracking-wide opacity-80">你的出價 <span className="opacity-60">(上限 ${max})</span></div>
         <div className={'text-2xl font-mono font-bold ' + (urgent ? 'text-rose-400' : 'text-amber-300')}>{(remain / 1000).toFixed(1)}s</div>
       </div>
       <div className="flex items-center gap-3">
-        <input type="range" min="0" max={max} value={amt} disabled={submitted != null}
-               onChange={(e) => setAmt(parseInt(e.target.value))} className="flex-1 disabled:opacity-50" />
-        <input type="number" min="0" max={max} value={amt} disabled={submitted != null}
+        <input type="range" min="0" max={max} value={amt}
+               onChange={(e) => setAmt(parseInt(e.target.value))} className="flex-1" />
+        <input type="number" min="0" max={max} value={amt}
                onChange={(e) => setAmt(Math.max(0, Math.min(max, parseInt(e.target.value) || 0)))}
-               className="w-20 bg-slate-800 rounded px-2 py-1 text-amber-300 font-mono disabled:opacity-50" />
-        {submitted == null ? (
-          <button onClick={submit}
-                  className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold rounded">
-            確認 ${amt}
-          </button>
-        ) : (
-          <div className="px-4 py-2 bg-emerald-700/50 text-emerald-200 rounded text-sm font-bold">
-            🔒 已鎖定 ${submitted}
-          </div>
-        )}
+               className="w-20 bg-slate-800 rounded px-2 py-1 text-amber-300 font-mono" />
+        <button onClick={submit}
+                className={'px-5 py-2 font-bold rounded ' + (lastSent == null || dirty
+                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-900'
+                  : 'bg-emerald-700/60 text-emerald-100 hover:bg-emerald-600/70')}>
+          {lastSent == null ? `確認 $${amt}` : (dirty ? `更新 $${amt}` : `✓ 已出價 $${lastSent}`)}
+        </button>
       </div>
-      {submitted == null && <div className="mt-2 text-[11px] text-rose-300/80">⏰ 沒在時限內出價將自動視為 $0</div>}
+      <div className="mt-2 text-[11px] text-rose-300/80">
+        {lastSent == null
+          ? '⏰ 沒在時限內出價將自動視為 $0｜時限內可重新出價'
+          : '✅ 已送出，時限內可繼續調整再按按鈕覆蓋'}
+      </div>
     </div>
   );
 }
