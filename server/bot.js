@@ -12,6 +12,7 @@ const BOT_ARCHETYPES = {
   MissionHunter: { aggression: 1.15, missionFocus: 1.40, intelligence: 1.00, signalAware: 0.90, loanLover: 0.55, investLover: 0.70 },
   LoanLover:     { aggression: 0.95, missionFocus: 0.70, intelligence: 0.90, signalAware: 0.75, loanLover: 0.65, investLover: 0.80 },
   Wildcard:      { aggression: 1.15, missionFocus: 0.95, intelligence: 1.10, signalAware: 1.10, loanLover: 0.85, investLover: 0.90 },
+  Profiler:      { aggression: 1.05, missionFocus: 0.85, intelligence: 1.20, signalAware: 1.25, loanLover: 0.50, investLover: 0.85 },
   Newbie:        { aggression: 0.85, missionFocus: 0.55, intelligence: 0.55, signalAware: 0.50, loanLover: 0.50, investLover: 0.55 },
 };
 const STYLE_KEYS = Object.keys(BOT_ARCHETYPES);
@@ -440,6 +441,69 @@ function botPickBid(p, game) {
       // Bid AT true value — opponents see lower V because they only see visibleUnused.
       // Snipe by paying full fair value when they underbid.
       personalityMult = 1.00 + r() * 0.05;
+      break;
+    }
+    case 'profiler': {
+      // OBSERVER: builds a per-opponent model from bid history on similar lots.
+      // For each opp: avg their past bids on lots of THIS kind, scale by their
+      // current cash vs their cash-then proxy, then take the max.
+      const myEV = lotValue + missionBonus + oneAwayBonus + diversityBonus;
+      const hist = (game.bidHistory && game.bidHistory.length >= 1) ? game.bidHistory : [];
+      let topPred = 0;
+      let totalSamples = 0;
+      for (const opp of game.players) {
+        if (opp.id === p.id) continue;
+        // Same-kind bids
+        const sameKind = [];
+        const allBids = [];
+        for (const h of hist) {
+          const b = h.bids[opp.id];
+          if (typeof b !== 'number') continue;
+          allBids.push(b);
+          if (h.cardKind === card.kind) {
+            if (h.cardKind === 'AUCTION_GEM' && h.lotSize !== lot.length) continue;
+            sameKind.push(b);
+          }
+        }
+        let pred;
+        if (sameKind.length >= 2) {
+          // Sorted, drop top outlier, take mean of rest
+          const s = sameKind.slice().sort((a, b) => a - b);
+          if (s.length >= 4) s.pop();
+          pred = s.reduce((a, b) => a + b, 0) / s.length;
+        } else if (sameKind.length === 1) {
+          pred = sameKind[0] * 0.85; // single sample, hedge down
+        } else if (allBids.length >= 1) {
+          // No same-kind data: use overall avg as weak prior
+          pred = (allBids.reduce((a, b) => a + b, 0) / allBids.length) * 0.7;
+        } else {
+          // Cold start: assume reasonably aggressive opp (≈55% of EV)
+          pred = Math.min(opp.money, myEV * 0.55);
+        }
+        // Cash floor: opp can't bid more than they have right now
+        pred = Math.min(pred, opp.money);
+        totalSamples += sameKind.length;
+        if (pred > topPred) topPred = pred;
+      }
+      // Decision: outbid topPred by +1 if profitable, with confidence-tiered margin
+      if (p.money >= 1 && topPred >= 0) {
+        const target = Math.min(p.money, Math.ceil(topPred + 1 + r() * 1.0));
+        const profit = myEV - target;
+        // More samples → trust model more → tolerate thinner margin
+        const confidence = Math.min(1.0, totalSamples / 8);
+        const requiredMargin = Math.max(0.5, target * (0.20 - 0.10 * confidence));
+        const cashFraction = target / Math.max(1, p.money);
+        const cashOK = cashFraction <= 0.65 || profit >= target * 0.30;
+        const skip = r() < 0.08;
+        if (!skip && profit >= requiredMargin && cashOK) {
+          return Math.max(1, target);
+        }
+        // Cheap grab: if predicted top is very low and EV solid
+        if (topPred <= 2 && myEV >= 3 && p.money >= 2 && r() > 0.10) {
+          return Math.min(p.money, Math.max(1, Math.ceil(topPred + 1)));
+        }
+      }
+      personalityMult = 0.95 + r() * 0.15; // 0.95–1.10 fallback
       break;
     }
     case 'newbie':

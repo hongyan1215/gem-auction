@@ -9,7 +9,7 @@ const N = parseInt(process.argv[2] || '500', 10);
 const STYLES = Object.keys(BOT_ARCHETYPES);
 
 function runOne() {
-  const specs = STYLES.slice(0, 8); // we have 8 archetypes; pick 5 random unique
+  const specs = STYLES.slice(); // pick 5 random unique from all archetypes
   // shuffle
   for (let i = specs.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
