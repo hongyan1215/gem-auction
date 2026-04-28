@@ -13,6 +13,20 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 app.use(express.static(path.join(__dirname, '..', 'client')));
 app.get('/health', (req, res) => res.json({ ok: true }));
+app.get('/rooms', (req, res) => {
+  const now = Date.now();
+  res.json({
+    count: rooms.size,
+    rooms: [...rooms.entries()].map(([code, r]) => ({
+      code,
+      members: r.members.length,
+      liveHumans: r.members.filter(m => m.socketId !== null).length,
+      phase: r.game ? r.game.phase : 'LOBBY',
+      ageMin: ((now - (r.createdAt || now)) / 60000).toFixed(1),
+      idleMin: ((now - (r.lastActivity || now)) / 60000).toFixed(1),
+    })),
+  });
+});
 
 const PORT = process.env.PORT || 4000;
 
@@ -27,7 +41,11 @@ class Room {
     this.game = null;
     this.bidTimer = null;
     this.revealTimer = null;
+    this.createdAt = Date.now();
+    this.lastActivity = Date.now();
   }
+
+  touch() { this.lastActivity = Date.now(); }
 
   publicLobby() {
     return {
@@ -197,6 +215,7 @@ class Room {
   }
 
   _broadcast() {
+    this.touch();
     if (!this.game) {
       io.to(this.code).emit('lobby', this.publicLobby());
       return;
@@ -333,11 +352,35 @@ io.on('connection', (socket) => {
       room._maybeBotTurns();
     } else {
       room.removeMember(socket.id);
-      if (room.members.length === 0) rooms.delete(code);
-      else room._broadcast();
+    }
+    // Universal cleanup: if no live humans left in this room, nuke it.
+    // Prevents zombie rooms (game-in-progress with everyone gone, or
+    // GAME_OVER rooms abandoned without 再玩一局).
+    const liveHumans = room.members.filter(m => m.socketId !== null).length;
+    if (liveHumans === 0) {
+      room._clearAllTimers();
+      rooms.delete(code);
+      console.log(`Room ${code} reaped (no live humans)`);
+    } else if (!room.game) {
+      room._broadcast();
     }
   });
 });
+
+// ---- Idle room sweeper ----
+// Belt-and-suspenders: nuke any room idle > IDLE_TTL_MS even if disconnect
+// handler missed it (e.g. orphaned game with all-bot members, weird socket states).
+const IDLE_TTL_MS = 30 * 60 * 1000; // 30 min
+setInterval(() => {
+  const now = Date.now();
+  for (const [code, room] of rooms) {
+    if (now - room.lastActivity > IDLE_TTL_MS) {
+      room._clearAllTimers && room._clearAllTimers();
+      rooms.delete(code);
+      console.log(`Room ${code} reaped (idle > ${IDLE_TTL_MS / 60000}min)`);
+    }
+  }
+}, 60 * 1000); // check every minute
 
 server.listen(PORT, () => {
   console.log(`Gem auction server on :${PORT}`);
