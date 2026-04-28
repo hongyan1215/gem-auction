@@ -644,14 +644,15 @@ function botPickBid(p, game) {
     bid = 2 + Math.floor(r() * Math.min(3, p.money - 2));
   }
 
-  // ============ OVERPAY GUARD: cap bid at ~130% of expected value ============
-  // Loosened (1.15→1.30) to add strategic noise — bots are too readable when
-  // every bid lives in [EV*0.85, EV*1.15]. Jackpots & Loan cards exempt.
+  // ============ OVERPAY GUARD: cap bid at ~120% of expected value ============
+  // Tightened (1.30→1.20) — 1.30 + bluff overbid + noise stacking caused
+  // visibly absurd spikes that humans flagged as "broken".
+  // Jackpots & Loan cards still exempt.
   const _isJackpot = (missionBonus >= 10) || (lotValue >= 16) || (card.kind === 'INVEST' && (card.value || 0) >= 10);
   if (!_isJackpot && card.kind !== 'LOAN') {
     const ev = lotValue + missionBonus + diversityBonus + oneAwayBonus;
     if (ev > 0) {
-      const hardCap = Math.ceil(ev * 1.30) + 1;
+      const hardCap = Math.ceil(ev * 1.20) + 1;
       if (bid > hardCap) bid = hardCap;
     } else if (ev <= 0 && bid > 1) {
       bid = Math.min(bid, 1);
@@ -659,18 +660,19 @@ function botPickBid(p, game) {
   }
 
   // ============ UNPREDICTABILITY LAYER ============
-  // 1) Per-bot noise (±20%) so two bots with same archetype don't bid identically
-  // 2) Bluff dice (8%): occasionally OVERBID modestly, or PASS on a juicy lot
+  // 1) Per-bot noise (±15%) — diversity without spikes that look "obviously broken"
+  // 2) Bluff dice (3%): occasional small overbid or sandbag. Jam capped at EV*1.15
+  //    (was 1.4, but humans complained about random absurd-high bids).
   if (!_isJackpot && card.kind !== 'LOAN' && bid > 0) {
-    const noise = 1 + (r() - 0.5) * 0.40; // 0.80..1.20
+    const noise = 1 + (r() - 0.5) * 0.30; // 0.85..1.15
     bid = Math.max(0, Math.round(bid * noise));
 
-    const bluffChance = 0.08;
+    const bluffChance = 0.03;
     if (r() < bluffChance && p.money >= 3) {
       const ev = Math.max(1, lotValue + missionBonus + diversityBonus + oneAwayBonus);
       if (r() < 0.50) {
-        // OVERBID bluff: small jam, capped at EV*1.4 — not money-dump
-        const jam = Math.min(p.money, Math.ceil(ev * (1.20 + r() * 0.20)));
+        // OVERBID bluff: small jam, capped at EV*1.15 (was 1.4 — too spiky)
+        const jam = Math.min(p.money, Math.ceil(ev * (1.05 + r() * 0.10)));
         bid = Math.max(bid, jam);
       } else {
         // SANDBAG bluff: pass / minimal bid even on decent lot
