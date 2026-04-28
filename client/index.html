@@ -468,16 +468,14 @@ function RevealPicker({ me, onReveal, deadline }) {
 
 function OpeningOverlay({ snap, onClose }) {
   const [secs, setSecs] = useState(10);
-  const [paused, setPaused] = useState(false);
   useEffect(() => {
-    if (paused) return;
     if (secs <= 0) { onClose(); return; }
     const t = setTimeout(() => setSecs(s => s - 1), 1000);
     return () => clearTimeout(t);
-  }, [secs, paused]);
+  }, [secs]);
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="card-bg rounded-xl p-6 max-w-2xl w-full ring-2 ring-amber-400/60" onClick={(e) => { e.stopPropagation(); setPaused(true); }}>
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+      <div className="card-bg rounded-xl p-6 max-w-2xl w-full ring-2 ring-amber-400/60">
         <h2 className="text-2xl font-bold text-amber-300 mb-3">🎯 本局任務</h2>
         <p className="text-sm opacity-70 mb-4">完成下列任務（先搶先贏，每題只算第一個達成者）</p>
         <div className="grid grid-cols-2 gap-3 mb-4">
@@ -491,9 +489,8 @@ function OpeningOverlay({ snap, onClose }) {
           <div className="h-full bg-amber-400 transition-all duration-1000 ease-linear" style={{ width: `${(secs/10)*100}%` }} />
         </div>
         <button onClick={onClose} className="w-full py-2 bg-amber-500 text-slate-900 font-bold rounded">
-          {paused ? '開始遊戲' : `開始遊戲（${secs}s 自動開始）`}
+          開始遊戲（{secs}s 自動開始）
         </button>
-        {paused && <div className="text-center text-xs opacity-50 mt-2">已暫停自動倒數</div>}
       </div>
     </div>
   );
