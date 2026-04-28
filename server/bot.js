@@ -98,33 +98,67 @@ function botPickBid(p, game) {
   const lot = game.currentLot || [];
   const cheats = _cheatsFor(p, game);
 
-  // ---- LOAN handling ----
+  // ---- LOAN handling (LEVERAGE MODEL) ----
   if (card.kind === 'LOAN') {
-    // Loan: receive (value - bid), pay value at end. Bid IS interest.
-    // True value of loan = (value - bid) cash now - bid_endgame_loss = value - bid - 0 ? no.
-    // Net at end: +money received +0 (cash 1:1) - value loaned. So: -bid (interest cost).
-    // BUT current cash can buy gems → indirect value. Worth ~20-40% of received cash.
-    // Smart bots realize loans = early cash advantage; higher intel → higher utility
-    const cashUtility = 0.25 + 0.25 * t.loanLover + 0.15 * t.intelligence;
+    // Loan: pay bid (interest) NOW, receive (value-bid) cash NOW, owe value at end.
+    // Net cash now: +(value - bid - bid) = value - 2*bid? NO. Re-read:
+    //   submitBid(amount) → received = value - amount; p.money += received; bid is consumed.
+    //   So cash delta now = value - amount - amount = value - 2*amount? NO.
+    //   Actually: bid amount is NOT subtracted, it's "consumed as interest" (line 285 says
+    //   p.money -= 0). So cash NOW: +(value - bid). Endgame: -value (face).
+    //   Net score impact: -bid (cash gain offset by face penalty), but cash NOW can buy
+    //   gems worth V which exceed cash 1:1. THAT is the leverage.
+    // → True utility = (cash_received * gem_multiplier) - bid_cost
+    //   where gem_multiplier = E[score per $1 spent on remaining gem auctions]
+
     const debtAlready = (p.loans || []).reduce((a, l) => a + l.value, 0);
-    // Style-aware debt limits — smart bots can leverage one loan
-    const debtCap = style === 'LoanLover' ? 15 : 10;
-    if (debtAlready >= debtCap) return 0;
-    if (debtAlready >= 25) return 0;
-    const debtPenalty = Math.min(1.0, debtAlready / 14); // discourage stacking
-    let willingnessFactor = (1 - debtPenalty) * cashUtility;
-    // CHEAT (LoanLover): if a higher-value Loan is still in deck, fold and wait
-    if (style === 'LoanLover' && cheats.nextLoan != null && cheats.nextLoan > card.value) {
-      return 0;
+    // Hard cap: each player can hit -50 max (2× $20 + 1× $10 = $50 total face).
+    if (debtAlready >= 50) return 0;
+
+    // ESTIMATE GEM-MULTIPLIER: how many gem-value points can $1 buy in remaining pool?
+    // Naive baseline: avg gem V across types I'd target ÷ avg winning bid for those.
+    // Practical proxy: if pool has many lots & I'm cash-poor relative to opps, mult is high.
+    let avgOppCash2 = 0, oppN2 = 0;
+    for (const opp of game.players) {
+      if (opp.id === p.id) continue;
+      avgOppCash2 += opp.money; oppN2++;
     }
-    // CHEAT (LoanLover): if THIS is the best/last loan, push hard
-    if (style === 'LoanLover' && (cheats.deckCounts.LOAN === 0 || cheats.nextLoan == null)) {
-      willingnessFactor *= 1.25;
+    avgOppCash2 = oppN2 > 0 ? avgOppCash2 / oppN2 : 20;
+    // cashDeficit ∈ [0, 1]: how much poorer am I vs avg opp
+    const cashDeficit = Math.max(0, Math.min(1, (avgOppCash2 - p.money) / Math.max(8, avgOppCash2)));
+    // Lots remaining in pool (higher = more chances to deploy cash)
+    const lotsLeft = (game.auctionPool || []).length + (game.market || []).length;
+    const earlyGameBoost = lotsLeft >= 8 ? 1.0 : (lotsLeft >= 4 ? 0.7 : 0.35);
+    // Multiplier: 1.0 = breakeven, 1.5+ = leverage profitable
+    // Smart bots understand this; low intel doesn't.
+    const baseMult = 1.0 + 0.6 * earlyGameBoost + 0.4 * cashDeficit;
+    const intelMult = 0.5 + 0.7 * t.intelligence; // 0.5..1.2
+    const gemMultiplier = baseMult * intelMult * (0.85 + 0.30 * t.loanLover);
+
+    // Max willing bid: such that (received_cash * mult) > bid + (face_penalty - face_already_paid)
+    //   The face value (-card.value) is unavoidable if we win. So:
+    //   Profit = (value - bid) * gemMultiplier - bid - card.value
+    //         = value*mult - bid*(mult+1) - card.value
+    //   Profitable when: bid < (value*(mult-1)) / (mult+1) ... roughly.
+    // Simpler: bid up to value * (mult-1)/(mult+1) * margin
+    const breakEven = card.value * Math.max(0, gemMultiplier - 1) / (gemMultiplier + 1);
+    let maxWilling = breakEven * (0.75 + 0.45 * t.aggression); // 0.75..1.20
+
+    // Stacking: existing debt costs cash flow at endgame (we have to NOT spend it)
+    // but each new loan still adds NET cash now. Penalty is mild for smart bots.
+    const stackPenalty = Math.min(0.5, debtAlready / 80);
+    maxWilling *= (1 - stackPenalty);
+
+    // CHEAT (LoanLover/Banker): wait for bigger loan if one's coming
+    if ((style === 'LoanLover' || style === 'Banker') && cheats.nextLoan != null && cheats.nextLoan > card.value) {
+      maxWilling *= 0.4; // not zero — sometimes still grab if cheap
     }
-    // OPENING PHASE COOLDOWN: in first 3 rounds, slash loan interest
-    const earlyCooldown = game.round <= 3 ? 0.55 : 1.0;
-    let bid = Math.floor(card.value * willingnessFactor * earlyCooldown * (0.7 + r() * 0.3));
-    // Cap by money + by what opponents could realistically pay
+    // CHEAT (LoanLover): last loan available → press
+    if (style === 'LoanLover' && cheats.deckCounts && (cheats.deckCounts.LOAN === 0 || cheats.nextLoan == null)) {
+      maxWilling *= 1.30;
+    }
+
+    let bid = Math.floor(maxWilling * (0.85 + r() * 0.30));
     bid = Math.min(bid, p.money);
     bid = _capByOpponents(p, game, bid);
     return Math.max(0, bid);
@@ -249,6 +283,11 @@ function botPickBid(p, game) {
     // For massive prizes (mission completion, V>=18), break the pace budget
     const isJackpot = cheatMission >= 10 || trueValue >= 18;
     if (!isJackpot) bid = Math.min(bid, paceBudget);
+    // ENDGAME CASH-DUMP: last 3 lots, push to ceiling (idle cash = wasted)
+    const lotsLeftWC = ((game.auctionPool && game.auctionPool.length) || 0);
+    if (lotsLeftWC <= 2 && p.money > 0) {
+      bid = Math.min(ceiling, Math.max(bid, Math.floor(p.money * 0.55)));
+    }
     bid = Math.min(bid, p.money);
     return Math.max(0, bid);
   }
@@ -349,6 +388,29 @@ function botPickBid(p, game) {
     if (have >= 3) diversityBonus -= 1.5; // diminishing
   }
 
+  // *** STACK BONUS: 3-of-a-kind in wonGems caps mission/value pyramid (max V=20 per gem
+  //     × 3 = 60 + 10 mission). With 2-of-a-kind already, the third gem of that type is
+  //     worth substantially more than its marginal V — it converts the stack into a
+  //     mission-scoring engine. Smart bots see this. ***
+  let stackBonus = 0;
+  for (const g of lot) {
+    const have = myWon[g] || 0;
+    // own hidden of same type also counts toward V (they stay unused at endgame)
+    const hiddenOfType = (ownHiddenCounts[g] || 0);
+    if (have === 2) stackBonus += 6 * t.intelligence; // completes pair → 3-of-a-kind setup
+    else if (have === 1 && hiddenOfType >= 1) stackBonus += 3 * t.intelligence; // hidden lock helps
+    // Hidden-lock bonus: each gem in our hidden of same type increases V because we keep
+    // them unused. Effectively this lot is worth more to us than to anyone else.
+    if (hiddenOfType >= 1) stackBonus += 1.0 * hiddenOfType;
+  }
+
+  // *** V-SATURATION BRAKE: if myEstUnused[g] >= 5, V is already at/near 20 cap.
+  //     Marginal value of a 6th gem is 0 (V capped). Don't overpay. ***
+  let saturationPenalty = 0;
+  for (const g of lot) {
+    if ((myEstUnused[g] || 0) >= 5) saturationPenalty += 2.0 * t.intelligence;
+  }
+
   // Leak penalty: winning forces revealing one hidden gem
   let leakPenalty = 0;
   for (const ty of Object.keys(ownHiddenCounts)) {
@@ -379,8 +441,16 @@ function botPickBid(p, game) {
     ? 1 + Math.min(0.32, (cashBurnRatio - 1.2) * 0.24) * t.intelligence * (0.4 + 0.6 * richness) * vacuumGuard
     : 1.0;
 
-  let base = lotValue * earlyDiscount + missionBonus + blockBonus + diversityBonus + oneAwayBonus - leakPenalty;
+  let base = lotValue * earlyDiscount + missionBonus + blockBonus + diversityBonus + stackBonus + oneAwayBonus - leakPenalty - saturationPenalty;
   base *= endgameUrgency * cashBurnMult;
+
+  // *** ENDGAME CASH-DUMP: in the last 3 lots, idle cash is worth $1 of score, but a
+  //     gem with V=20 is worth $20. Smart bots dump cash AGGRESSIVELY in last 3 lots,
+  //     even at slight overpay, since the alternative is unspent cash → 1:1 score. ***
+  if (lotsRemaining <= 3 && p.money > 0) {
+    const dumpFactor = 1 + (4 - lotsRemaining) * 0.18 * t.intelligence; // up to ~1.54
+    base *= dumpFactor;
+  }
 
   // ANTI-HUMAN GANG-UP: DISABLED (user found it actually made bots easier to beat —
   // they bid up everything human touched even when human was bluffing; now bots play
