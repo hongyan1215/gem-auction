@@ -11,7 +11,7 @@ const BOT_ARCHETYPES = {
   Sniper:        { aggression: 1.00, missionFocus: 0.65, intelligence: 1.0, signalAware: 0.9, loanLover: 0.3, investLover: 0.6 },
   MissionHunter: { aggression: 1.00, missionFocus: 1.1, intelligence: 0.8, signalAware: 0.7, loanLover: 0.4, investLover: 0.5 },
   LoanLover:     { aggression: 0.85, missionFocus: 0.55, intelligence: 0.7, signalAware: 0.55, loanLover: 0.45, investLover: 0.65 },
-  Wildcard:      { aggression: 0.75, missionFocus: 0.5, intelligence: 0.30, signalAware: 0.30, loanLover: 0.5, investLover: 0.5 },
+  Wildcard:      { aggression: 1.10, missionFocus: 0.85, intelligence: 1.0, signalAware: 1.0, loanLover: 0.85, investLover: 0.85 },
   Newbie:        { aggression: 0.65, missionFocus: 0.4, intelligence: 0.20, signalAware: 0.20, loanLover: 0.4, investLover: 0.4 },
 };
 const STYLE_KEYS = Object.keys(BOT_ARCHETYPES);
@@ -92,12 +92,60 @@ function botPickBid(p, game) {
   const myEstUnused = {};
   for (const tt of GEM_TYPES) myEstUnused[tt] = (visibleUnused[tt] || 0) + (ownHiddenCounts[tt] || 0);
 
+  // *** WILDCARD CHEAT: omniscient — sees every player's hidden gems for perfect V(n) ***
+  if (String(style || '').toLowerCase() === 'wildcard') {
+    for (const tt of GEM_TYPES) myEstUnused[tt] = 0;
+    for (const pl of game.players) {
+      for (const g of pl.hiddenGems) myEstUnused[g] = (myEstUnused[g] || 0) + 1;
+      for (const g of pl.revealedGems) myEstUnused[g] = (myEstUnused[g] || 0) + 1;
+    }
+    // After winning this lot we reveal one of OUR hiddens. So one of our hidden
+    // moves to revealed (still unused). Net: unused count unchanged. Good.
+  }
+
   let lotValue = 0;
   for (const g of lot) {
     // V is per-gem value if I LEAVE this gem in unused — but I'm taking it out of auction (different pool).
     // V depends on count remaining unused at endgame; auctioning doesn't reduce unused.
     // So I value lot at V(myEstUnused[g]) per gem.
     lotValue += valueForCount(myEstUnused[g] || 0);
+  }
+
+  // *** WILDCARD CHEAT FAST-PATH ***
+  // Sees true endgame V(n). Strategy: snipe — bid just above predicted opp max,
+  // never more than (true_value - 1), and pace cash across remaining auctions.
+  if (String(style || '').toLowerCase() === 'wildcard' && card.kind === 'AUCTION_GEM') {
+    let cheatMission = 0;
+    for (const m of game.missions) {
+      if (m.completedBy) continue;
+      if (meets(m, p.wonGems)) continue;
+      if (meets(m, p.wonGems.concat(lot))) cheatMission += m.score;
+    }
+    const trueValue = lotValue + cheatMission;
+    if (trueValue < 2) return 0;
+    const ceiling = Math.max(1, trueValue - 1);
+    // Pace: split cash across remaining gem auctions in pool (incl. this one).
+    const remainingGemAuctions = Math.max(1, ((game.auctionPool && game.auctionPool.length) || 0) + 1);
+    // Allow up to 2x average per-lot budget (for high-value lots)
+    const paceBudget = Math.floor((p.money / remainingGemAuctions) * 2.2);
+    // Snipe: predict opponent max from history; bid opp_max + 1
+    const oppMaxPred = _predictOppMax(p, game, card, lot, t);
+    let snipeBid;
+    if (oppMaxPred != null) {
+      snipeBid = Math.ceil(oppMaxPred + 1);
+    } else {
+      // No history: assume opps will bid up to ~40% of avg cash
+      let avgOppCash = 0, n = 0;
+      for (const opp of game.players) if (opp.id !== p.id) { avgOppCash += opp.money; n++; }
+      snipeBid = Math.ceil((avgOppCash / Math.max(1, n)) * 0.45);
+    }
+    // Final: min(ceiling, max(snipeBid, smallFloor)) capped by paceBudget AND cash
+    let bid = Math.min(ceiling, Math.max(snipeBid, 1));
+    // For massive prizes (mission completion, V>=18), break the pace budget
+    const isJackpot = cheatMission >= 10 || trueValue >= 18;
+    if (!isJackpot) bid = Math.min(bid, paceBudget);
+    bid = Math.min(bid, p.money);
+    return Math.max(0, bid);
   }
 
   // Mission contribution — value progress, not just completion
@@ -239,9 +287,13 @@ function botPickBid(p, game) {
       personalityMult = 0.80 + r() * 0.18;
       break;
     }
-    case 'wildcard':
-      personalityMult = 0.4 + r() * 0.9;
+    case 'wildcard': {
+      // CHEATER: knows true endgame V(n). lotValue is the TRUE total value.
+      // Bid AT true value — opponents see lower V because they only see visibleUnused.
+      // Snipe by paying full fair value when they underbid.
+      personalityMult = 1.00 + r() * 0.05;
       break;
+    }
     case 'newbie':
       personalityMult = 0.6 + r() * 0.5; // sometimes way over, sometimes way under
       base *= 0.85 + r() * 0.4; // noisy valuation
@@ -272,7 +324,7 @@ function botPickBid(p, game) {
   let bid = Math.floor(base * personalityMult);
 
   // Opponent-aware sniping: bid just enough to win, not more
-  if (predictedOppMax != null && t.intelligence >= 0.5 && styleKey !== 'wildcard' && styleKey !== 'newbie' && styleKey !== 'sniper') {
+  if (predictedOppMax != null && t.intelligence >= 0.5 && styleKey !== 'newbie' && styleKey !== 'sniper') {
     const myValue = lotValue + missionBonus + diversityBonus + oneAwayBonus;
     const targetBid = Math.ceil(predictedOppMax + 1 + r() * 1.5);
     // If I'd profit at the snipe price, snipe (cap my bid down OR push up just to win)
@@ -293,6 +345,7 @@ function botPickBid(p, game) {
     let margin = Math.max(0, Math.floor(t.intelligence * 1.5 - 0.3));
     if (styleKey === 'missionhunter' && missionBonus > 5) margin = 0;
     if (styleKey === 'aggressor') margin = 0;  // Aggressor accepts thin margins
+    if (styleKey === 'wildcard') margin = 0;   // Cheater: knows true value, no safety margin needed
     if (bid > totalValueToMe - margin) {
       bid = Math.max(0, Math.floor(totalValueToMe - margin));
     }
