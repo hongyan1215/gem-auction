@@ -94,7 +94,11 @@ class Room {
       [playerSpecs[i], playerSpecs[j]] = [playerSpecs[j], playerSpecs[i]];
     }
     while (playerSpecs.length < PLAYERS) {
-      const profile = makeBotProfile();
+      // Avoid duplicate archetypes in the same game — pick from styles not yet used
+      const usedStyles = new Set(
+        playerSpecs.filter(s => s.isBot && s.profile?.style).map(s => s.profile.style)
+      );
+      const profile = makeBotProfile(usedStyles);
       playerSpecs.push({
         socketId: null,
         id: 'bot_' + Math.random().toString(36).slice(2, 9),
@@ -371,7 +375,11 @@ io.on('connection', (socket) => {
       if (p) {
         p.connected = false;
         p.isBot = true;
-        p.profile = makeBotProfile();
+        // Avoid duplicating an existing bot's archetype in this game
+        const usedStyles = new Set(
+          room.game.players.filter(x => x.id !== p.id && x.isBot && x.profile?.style).map(x => x.profile.style)
+        );
+        p.profile = makeBotProfile(usedStyles);
       }
       const m = room.members.find(m => m.socketId === socket.id);
       if (m) m.socketId = null; // keep playerKey for potential rejoin

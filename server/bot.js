@@ -32,8 +32,11 @@ function rollTraits(style) {
 const BOT_NAMES = ['Apex','Bingo','Cash','Dingo','Echo','Fizz','Gizmo','Hex','Iris','Jade','Kilo','Lumi','Maxi','Nova','Onyx','Pip','Quill','Ruby','Sage','Tiko','Uno','Vex','Wisp','Xeno','Yoyo','Zephyr'];
 function randomBotName() { return BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)] + Math.floor(Math.random() * 100); }
 
-function makeBotProfile() {
-  const style = STYLE_KEYS[Math.floor(Math.random() * STYLE_KEYS.length)];
+function makeBotProfile(excludeStyles = null) {
+  const exclude = excludeStyles instanceof Set ? excludeStyles : new Set(excludeStyles || []);
+  const pool = STYLE_KEYS.filter(s => !exclude.has(s));
+  const candidates = pool.length > 0 ? pool : STYLE_KEYS; // fallback if all used
+  const style = candidates[Math.floor(Math.random() * candidates.length)];
   return { style, traits: rollTraits(style), name: randomBotName() + '·' + style };
 }
 
@@ -374,12 +377,26 @@ function botPickBid(p, game) {
         } catch {}
       }
       if (usePeek && peekMax >= 0 && p.money >= 1) {
+        // Sniper now JUDGES whether the snipe is worth it instead of +1ing every time.
         const target = Math.min(p.money, peekMax + 1);
         const profit = expectedValue - target;
-        if (profit >= 0.5 || (peekMax <= 2 && expectedValue >= 3)) {
+        // Required margin scales with target — small bids need ~1, mid bids ~1.5, big bids ~2
+        const requiredMargin = Math.max(0.5, target * 0.12);
+        // Don't dump >65% of cash on a single snipe unless EV crushes it
+        const cashFraction = target / Math.max(1, p.money);
+        const cashOK = cashFraction <= 0.65 || profit >= target * 0.30;
+        // Random skip — even good snipes get passed ~12% of the time (anti-tell)
+        const skip = r() < 0.12;
+        // Cheap easy snipes (peek says 0~2) — still take if EV solid, less skip
+        const easyGrab = peekMax <= 2 && expectedValue >= 3 && r() > 0.08;
+        if (easyGrab) {
           return Math.max(1, target);
         }
-        if (peekMax === 0 && expectedValue >= 2) return Math.min(1, p.money);
+        if (!skip && profit >= requiredMargin && cashOK) {
+          return Math.max(1, target);
+        }
+        if (peekMax === 0 && expectedValue >= 2 && r() > 0.25) return Math.min(1, p.money);
+        // Otherwise: fall through to non-cheat heuristic (may still bid lower / skip)
       }
       // ---------- NON-CHEAT MODE: strong model-based sniping ----------
       // 1) Aggressive opp-max prediction (assumes rivals bid ~75% of their cash on big lots)
