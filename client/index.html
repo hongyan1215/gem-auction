@@ -34,7 +34,25 @@ const GEM_LABEL = { RUBY: '紅寶', SAPPHIRE: '藍寶', EMERALD: '綠寶', TOPAZ
 const Vfn = (n) => n <= 0 ? 0 : Math.min(4 * n, 20);
 
 function Gem({ type, size = 28, hidden = false, onClick, title }) {
-  return <span title={title} onClick={onClick} className={'gem gem-' + (hidden ? 'hidden' : type) + (onClick ? ' cursor-pointer hover:scale-110 transition' : '')} style={{ width: size, height: size }} />;
+  const t = title || (hidden ? '隱藏寶石' : (GEM_LABEL[type] || type));
+  return <span title={t} onClick={onClick} className={'gem gem-' + (hidden ? 'hidden' : type) + (onClick ? ' cursor-pointer hover:scale-110 transition' : '')} style={{ width: size, height: size }} />;
+}
+
+function Tip({ text, children, side = 'top' }) {
+  if (!text) return children;
+  const pos = side === 'top'
+    ? 'bottom-full left-1/2 -translate-x-1/2 mb-1'
+    : side === 'bottom' ? 'top-full left-1/2 -translate-x-1/2 mt-1'
+    : side === 'left' ? 'right-full top-1/2 -translate-y-1/2 mr-1'
+    : 'left-full top-1/2 -translate-y-1/2 ml-1';
+  return (
+    <span className="relative group inline-block align-middle">
+      {children}
+      <span className={'pointer-events-none absolute z-50 whitespace-pre-line text-[11px] leading-tight px-2 py-1 rounded bg-slate-900/95 ring-1 ring-amber-400/40 text-slate-100 shadow-lg opacity-0 group-hover:opacity-100 transition w-max max-w-[220px] ' + pos}>
+        {text}
+      </span>
+    </span>
+  );
 }
 
 function Countdown({ deadline }) {
@@ -59,25 +77,30 @@ function MissionBadge({ m, large }) {
       {gems.map((g, i) => <Gem key={i} type={g} size={large ? 28 : 18} />)}
     </div>
   );
-  let body, points;
-  if (m.type === 'TWO_SPECIFIC') { body = gemRow(m.gems); points = '+5'; }
-  else if (m.type === 'THREE_SPECIFIC') { body = gemRow(m.gems); points = '+10'; }
+  let body, points, tip;
+  if (m.type === 'TWO_SPECIFIC') { body = gemRow(m.gems); points = '+5'; tip = `任務：在「已得寶石」中湊齊 ${m.gems.map(g => GEM_LABEL[g]).join(' + ')}，+5 分（先到先得）`; }
+  else if (m.type === 'THREE_SPECIFIC') { body = gemRow(m.gems); points = '+10'; tip = `任務：在「已得寶石」中湊齊 ${m.gems.map(g => GEM_LABEL[g]).join(' + ')}，+10 分（先到先得）`; }
   else if (m.type === 'FOUR_DIFFERENT') {
     body = (<div className="flex gap-1 items-center text-[10px]"><span>🌈</span><span>4 種不同</span></div>);
     points = '+10';
+    tip = '任務：「已得寶石」中包含至少 4 種不同顏色，+10 分（先到先得）';
   }
   else if (m.type === 'THREE_OF_A_KIND') {
     body = (<div className="flex gap-1 items-center text-[10px]"><span>💎×3</span><span>同色</span></div>);
     points = '+10';
+    tip = '任務：「已得寶石」中有 3 顆同色，+10 分（先到先得）';
   }
+  const claimedTip = m.completedBy ? ` · 已被 ${m.completedByName || '某玩家'} 達成` : '';
   return (
-    <div className={'p-2 rounded transition-all ' + (m.completedBy ? 'bg-emerald-900/40 ring-1 ring-emerald-500/40 opacity-60' : 'card-bg ring-1 ring-slate-700') + (large ? ' p-3' : '')}>
-      <div className="flex items-center justify-between gap-2">
-        {body}
-        <span className={'text-xs font-bold ' + (m.completedBy ? 'text-emerald-300 line-through' : 'text-amber-300')}>{points}</span>
+    <Tip text={(tip || '') + claimedTip} side="bottom">
+      <div className={'p-2 rounded transition-all ' + (m.completedBy ? 'bg-emerald-900/40 ring-1 ring-emerald-500/40 opacity-60' : 'card-bg ring-1 ring-slate-700') + (large ? ' p-3' : '')}>
+        <div className="flex items-center justify-between gap-2">
+          {body}
+          <span className={'text-xs font-bold ' + (m.completedBy ? 'text-emerald-300 line-through' : 'text-amber-300')}>{points}</span>
+        </div>
+        {m.completedBy && <div className="text-[10px] mt-1 text-emerald-300">✓ 已完成</div>}
       </div>
-      {m.completedBy && <div className="text-[10px] mt-1 text-emerald-300">✓ 已完成</div>}
-    </div>
+    </Tip>
   );
 }
 
@@ -97,11 +120,13 @@ function ValueTable({ snap, viewerHidden }) {
         {GEM_TYPES.map(t => {
           const n = c[t] || 0;
           return (
-            <div key={t} className="text-center">
-              <Gem type={t} size={24} />
-              <div className="text-xs mt-1">n≥{n}</div>
-              <div className="text-amber-300 font-mono text-sm">{Vfn(n)}+</div>
-            </div>
+            <Tip key={t} text={`${GEM_LABEL[t]}：目前可見 ${n} 顆，預估價值至少 ${Vfn(n)} 分／顆\n結算公式 V(n)=min(4n,20)\n(被拍走的同色越多→該色越廢)`} side="bottom">
+              <div className="text-center">
+                <Gem type={t} size={24} />
+                <div className="text-xs mt-1">n≥{n}</div>
+                <div className="text-amber-300 font-mono text-sm">{Vfn(n)}+</div>
+              </div>
+            </Tip>
           );
         })}
       </div>
@@ -111,18 +136,20 @@ function ValueTable({ snap, viewerHidden }) {
 
 function CardDisplay({ card, lot }) {
   if (!card) return <div className="text-slate-500">等待開牌…</div>;
-  let label, color;
-  if (card.kind === 'AUCTION_GEM') { label = '寶石拍賣 ×' + (card.size); color = 'from-amber-700 to-amber-900'; }
-  else if (card.kind === 'INVEST') { label = '投資 +' + card.value + '分'; color = 'from-emerald-700 to-emerald-900'; }
-  else if (card.kind === 'LOAN') { label = '貸款 ' + card.value + '/-' + card.value; color = 'from-rose-700 to-rose-900'; }
+  let label, color, tip;
+  if (card.kind === 'AUCTION_GEM') { label = '寶石拍賣 ×' + (card.size); color = 'from-amber-700 to-amber-900'; tip = `得標者付出價，獲得 ${card.size} 顆寶石進「已得寶石」(可計任務)`; }
+  else if (card.kind === 'INVEST') { label = '投資 +' + card.value + '分'; color = 'from-emerald-700 to-emerald-900'; tip = `押金扣下不返還，遊戲結束時退回押金 + 加 ${card.value} 分`; }
+  else if (card.kind === 'LOAN') { label = '貸款 ' + card.value + '/-' + card.value; color = 'from-rose-700 to-rose-900'; tip = `立刻拿到 (${card.value} - 出價) 金幣，結算時 -${card.value} 分`; }
   return (
-    <div className={'rounded-lg bg-gradient-to-br ' + color + ' p-4 glow pulse-ring'}>
-      <div className="text-xs opacity-80">本回合拍賣</div>
-      <div className="text-xl font-bold">{label}</div>
-      {lot && lot.length > 0 && (
-        <div className="mt-3 flex gap-2">{lot.map((g, i) => <Gem key={i} type={g} size={36} />)}</div>
-      )}
-    </div>
+    <Tip text={tip} side="bottom">
+      <div className={'rounded-lg bg-gradient-to-br ' + color + ' p-4 glow pulse-ring cursor-help'}>
+        <div className="text-xs opacity-80">本回合拍賣</div>
+        <div className="text-xl font-bold">{label}</div>
+        {lot && lot.length > 0 && (
+          <div className="mt-3 flex gap-2">{lot.map((g, i) => <Gem key={i} type={g} size={36} />)}</div>
+        )}
+      </div>
+    </Tip>
   );
 }
 
@@ -136,23 +163,31 @@ function PlayerCard({ p, isMe, isWinner, onReveal, canReveal, bidShown }) {
           <div className="text-xs opacity-70">座位 {p.seat + 1}</div>
         </div>
         <div className="text-right">
-          <div className="text-amber-300 font-mono text-lg">${p.money}</div>
-          {p.score > 0 && <div className="text-emerald-300 text-xs">+{p.score}分</div>}
+          <Tip text="持有金幣（公開）。本回合最高出價上限。" side="left">
+            <div className="text-amber-300 font-mono text-lg cursor-help">${p.money}</div>
+          </Tip>
+          {p.score > 0 && <Tip text="任務累積加分（公開，不可用於拍賣）" side="left"><div className="text-emerald-300 text-xs cursor-help">+{p.score}分</div></Tip>}
         </div>
       </div>
       <div className="mt-2">
-        <div className="text-[10px] opacity-60">已得寶石 ({p.wonGems.length})</div>
+        <Tip text="拍賣得標的寶石（公開）。會被任務檢查、結算時用 V(n) 計分。" side="bottom">
+          <div className="text-[10px] opacity-60 cursor-help">已得寶石 ({p.wonGems.length}) ⓘ</div>
+        </Tip>
         <div className="flex flex-wrap gap-1 mt-1 min-h-[20px]">
           {p.wonGems.map((g, i) => <Gem key={i} type={g} size={18} />)}
         </div>
       </div>
       <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
         <div>
-          <div className="opacity-60">公開隱藏 ({p.revealedGems.length})</div>
+          <Tip text="得標時被迫公開的隱藏寶石。會列入 V(n) 但不算任務寶石。" side="top">
+            <div className="opacity-60 cursor-help">公開隱藏 ({p.revealedGems.length}) ⓘ</div>
+          </Tip>
           <div className="flex flex-wrap gap-0.5">{p.revealedGems.map((g, i) => <Gem key={i} type={g} size={16} />)}</div>
         </div>
         <div>
-          <div className="opacity-60">未知隱藏 ({p.hiddenCount})</div>
+          <Tip text="尚未公開的寶石。對手只看到顆數。" side="top">
+            <div className="opacity-60 cursor-help">未知隱藏 ({p.hiddenCount}) ⓘ</div>
+          </Tip>
           <div className="flex flex-wrap gap-0.5">
             {isMe && p.hiddenGems
               ? p.hiddenGems.map((g, i) => (
