@@ -358,18 +358,22 @@ function botPickBid(p, game) {
   const styleKey = String(style || '').toLowerCase();
   switch (styleKey) {
     case 'sniper': {
-      // CHEATER (peek mode): Sniper goes LAST and sees everyone else's submitted bids.
-      // It reads game.bids directly, finds current max, and overbids by +1 if value supports it.
+      // CHEATER (peek mode, throttled to 40%): Sniper goes LAST and CAN see bids,
+      // but only acts on the peek 40% of the time. The other 60% it bids on its own
+      // judgment (legacy sniper logic) so it doesn't dominate every round.
       const expectedValue = lotValue + missionBonus + oneAwayBonus + diversityBonus;
+      const usePeek = Math.random() < 0.40;
       let peekMax = -1;
-      try {
-        if (game && game.bids && typeof game.bids.forEach === 'function') {
-          game.bids.forEach((amt, pid) => {
-            if (pid !== p.id && typeof amt === 'number' && amt > peekMax) peekMax = amt;
-          });
-        }
-      } catch {}
-      if (peekMax >= 0 && p.money >= 1) {
+      if (usePeek) {
+        try {
+          if (game && game.bids && typeof game.bids.forEach === 'function') {
+            game.bids.forEach((amt, pid) => {
+              if (pid !== p.id && typeof amt === 'number' && amt > peekMax) peekMax = amt;
+            });
+          }
+        } catch {}
+      }
+      if (usePeek && peekMax >= 0 && p.money >= 1) {
         const target = Math.min(p.money, peekMax + 1);
         const profit = expectedValue - target;
         // Snipe if profitable, OR if cheap (peekMax<=2) and value≥3 — steal cheap lots
