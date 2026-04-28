@@ -53,16 +53,30 @@ function Countdown({ deadline }) {
   );
 }
 
-function MissionBadge({ m }) {
-  let label = '';
-  if (m.type === 'TWO_SPECIFIC') label = '+5 集 ' + m.gems.map(g => GEM_LABEL[g]).join('+');
-  else if (m.type === 'THREE_SPECIFIC') label = '+10 集 ' + m.gems.map(g => GEM_LABEL[g]).join('+');
-  else if (m.type === 'FOUR_DIFFERENT') label = '+10 4 種不同寶石';
-  else if (m.type === 'THREE_OF_A_KIND') label = '+10 同種寶石 ×3';
+function MissionBadge({ m, large }) {
+  const gemRow = (gems) => (
+    <div className="flex gap-1 items-center">
+      {gems.map((g, i) => <Gem key={i} type={g} size={large ? 28 : 18} />)}
+    </div>
+  );
+  let body, points;
+  if (m.type === 'TWO_SPECIFIC') { body = gemRow(m.gems); points = '+5'; }
+  else if (m.type === 'THREE_SPECIFIC') { body = gemRow(m.gems); points = '+10'; }
+  else if (m.type === 'FOUR_DIFFERENT') {
+    body = (<div className="flex gap-1 items-center text-[10px]"><span>🌈</span><span>4 種不同</span></div>);
+    points = '+10';
+  }
+  else if (m.type === 'THREE_OF_A_KIND') {
+    body = (<div className="flex gap-1 items-center text-[10px]"><span>💎×3</span><span>同色</span></div>);
+    points = '+10';
+  }
   return (
-    <div className={'p-2 rounded text-xs ' + (m.completedBy ? 'bg-emerald-900/40 text-emerald-300 line-through' : 'card-bg')}>
-      {label}
-      {m.completedBy && <div className="text-[10px] opacity-70">完成</div>}
+    <div className={'p-2 rounded transition-all ' + (m.completedBy ? 'bg-emerald-900/40 ring-1 ring-emerald-500/40 opacity-60' : 'card-bg ring-1 ring-slate-700') + (large ? ' p-3' : '')}>
+      <div className="flex items-center justify-between gap-2">
+        {body}
+        <span className={'text-xs font-bold ' + (m.completedBy ? 'text-emerald-300 line-through' : 'text-amber-300')}>{points}</span>
+      </div>
+      {m.completedBy && <div className="text-[10px] mt-1 text-emerald-300">✓ 已完成</div>}
     </div>
   );
 }
@@ -171,20 +185,38 @@ function PlayerCard({ p, isMe, isWinner, onReveal, canReveal, bidShown }) {
 
 function BidInput({ snap, me, onSubmit }) {
   const [amt, setAmt] = useState(0);
-  const [submitted, setSubmitted] = useState(0);
-  useEffect(() => { setSubmitted(0); setAmt(0); }, [snap.round]);
+  const [submitted, setSubmitted] = useState(null);
+  useEffect(() => { setSubmitted(null); setAmt(0); }, [snap.round]);
   const max = me ? me.money : 0;
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const id = setInterval(() => setNow(Date.now()), 200); return () => clearInterval(id); }, []);
+  const remain = Math.max(0, snap.bidDeadline - now);
+  const urgent = remain < 4000;
+  const submit = () => { onSubmit(amt); setSubmitted(amt); };
   return (
-    <div className="card-bg rounded-lg p-3">
-      <div className="text-xs opacity-70 mb-2">你的出價 (上限 ${max})</div>
-      <div className="flex items-center gap-3">
-        <input type="range" min="0" max={max} value={amt} onChange={(e) => setAmt(parseInt(e.target.value))} className="flex-1" />
-        <input type="number" min="0" max={max} value={amt} onChange={(e) => setAmt(Math.max(0, Math.min(max, parseInt(e.target.value) || 0)))} className="w-16 bg-slate-800 rounded px-2 py-1 text-amber-300 font-mono" />
-        <button
-          onClick={() => { onSubmit(amt); setSubmitted(amt); }}
-          className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold rounded"
-        >{submitted ? `已出 $${submitted} (可改)` : '確認出價'}</button>
+    <div className={'card-bg rounded-lg p-4 transition-all ' + (urgent ? 'ring-2 ring-rose-500 animate-pulse' : 'ring-2 ring-amber-400/30')}>
+      <div className="flex justify-between items-center mb-2">
+        <div className="text-xs uppercase tracking-wide opacity-80">你的出價 <span className="opacity-60">(上限 ${max})</span></div>
+        <div className={'text-2xl font-mono font-bold ' + (urgent ? 'text-rose-400' : 'text-amber-300')}>{(remain / 1000).toFixed(1)}s</div>
       </div>
+      <div className="flex items-center gap-3">
+        <input type="range" min="0" max={max} value={amt} disabled={submitted != null}
+               onChange={(e) => setAmt(parseInt(e.target.value))} className="flex-1 disabled:opacity-50" />
+        <input type="number" min="0" max={max} value={amt} disabled={submitted != null}
+               onChange={(e) => setAmt(Math.max(0, Math.min(max, parseInt(e.target.value) || 0)))}
+               className="w-20 bg-slate-800 rounded px-2 py-1 text-amber-300 font-mono disabled:opacity-50" />
+        {submitted == null ? (
+          <button onClick={submit}
+                  className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold rounded">
+            確認 ${amt}
+          </button>
+        ) : (
+          <div className="px-4 py-2 bg-emerald-700/50 text-emerald-200 rounded text-sm font-bold">
+            🔒 已鎖定 ${submitted}
+          </div>
+        )}
+      </div>
+      {submitted == null && <div className="mt-2 text-[11px] text-rose-300/80">⏰ 沒在時限內出價將自動視為 $0</div>}
     </div>
   );
 }
@@ -297,12 +329,33 @@ function GameOver({ snap }) {
   );
 }
 
+function OpeningOverlay({ snap, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card-bg rounded-xl p-6 max-w-2xl w-full ring-2 ring-amber-400/60" onClick={(e) => e.stopPropagation()}>
+        <h2 className="text-2xl font-bold text-amber-300 mb-3">🎯 本局任務</h2>
+        <p className="text-sm opacity-70 mb-4">完成下列任務（先搶先贏，每題只算第一個達成者）</p>
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          {snap.missions.map((m, i) => <MissionBadge key={i} m={m} large />)}
+        </div>
+        <div className="text-xs opacity-60 mb-3 space-y-1">
+          <div>💰 起始 $20、3 顆隱藏寶石｜⏱️ 每回合 15 秒盲標｜🏆 拍完 15 顆寶石結算</div>
+          <div>📊 寶石分數 V(n)=min(4n,20)，n = 沒被拍走的同色數</div>
+        </div>
+        <button onClick={onClose} className="w-full py-2 bg-amber-500 text-slate-900 font-bold rounded">開始遊戲</button>
+      </div>
+    </div>
+  );
+}
+
 function Game({ snap, socket, myId }) {
   const me = snap.players.find(p => p.id === myId);
   const others = snap.players.filter(p => p.id !== myId);
   const winnerSeat = snap.winner ? snap.winner.seat : null;
   const showBids = snap.phase === 'AWAITING_REVEAL' || snap.phase === 'RESOLVING';
   const bidOf = (pid) => (showBids && snap.bidsPublic ? (snap.bidsPublic[pid] != null ? snap.bidsPublic[pid] : null) : null);
+  const [showOpening, setShowOpening] = useState(true);
+  useEffect(() => { if (snap.round > 1) setShowOpening(false); }, [snap.round]);
 
   const onBid = (amount) => socket.emit('submitBid', { amount });
   const onReveal = (gem) => socket.emit('reveal', { gem });
@@ -320,6 +373,7 @@ function Game({ snap, socket, myId }) {
 
   return (
     <div className="grid grid-cols-12 gap-4 max-w-7xl mx-auto p-4">
+      {showOpening && snap.round === 1 && <OpeningOverlay snap={snap} onClose={() => setShowOpening(false)} />}
       {/* Top: opponents */}
       <div className="col-span-12 grid grid-cols-4 gap-3">
         {others.map(p => <PlayerCard key={p.id} p={p} isWinner={p.seat === winnerSeat && (snap.phase === 'AWAITING_REVEAL' || snap.phase === 'RESOLVING')} bidShown={bidOf(p.id)} />)}
