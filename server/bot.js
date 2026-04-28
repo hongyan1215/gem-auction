@@ -168,18 +168,28 @@ function botPickBid(p, game) {
 
   // ---- INVEST handling ----
   if (card.kind === 'INVEST') {
-    // CHEAT (Banker): if a more valuable Invest is coming, skip this one
+    // Invest is PURE +EV: bid X, refund X at end + bonus value. Net = +value (free score)
+    // unless overbid. Max profitable bid is value-1. Anyone passing is leaving money on table.
+    // CHEAT (Banker): if a bigger Invest is coming, soft-discount this one (don't fully skip — others will grab it)
+    let lookaheadDiscount = 1.0;
     if (style === 'Banker' && cheats.nextInvest != null && cheats.nextInvest > card.value) {
-      // Wait for the better one
-      return 0;
+      lookaheadDiscount = 0.65;
     }
     const valueToMe = card.value;
-    const margin = 1 + r() * 2; // require 1-3 profit margin
-    let maxWilling = Math.max(0, valueToMe - margin);
-    maxWilling *= 0.7 + 0.6 * t.investLover; // 0.7 .. 1.3
-    // CHEAT (Banker): last invest in deck → push to win
-    if (style === 'Banker' && cheats.deckCounts.INVEST === 0) maxWilling *= 1.20;
-    let bid = Math.floor(maxWilling * (t.aggression * (0.7 + r() * 0.4)));
+    // Real ceiling: value-1 ($4 for $5 invest, $9 for $10). Anything below is profit.
+    let maxWilling = Math.max(0, valueToMe - 1);
+    maxWilling *= 0.85 + 0.30 * t.investLover; // 0.85 .. 1.15
+    // Banker IDENTITY: this is your specialty — push close to ceiling. Big invests get extra love.
+    if (style === 'Banker') {
+      maxWilling *= (card.value >= 10 ? 1.45 : 1.30);
+    }
+    maxWilling *= lookaheadDiscount;
+    // CHEAT (Banker): last invest in deck → press
+    if (style === 'Banker' && cheats.deckCounts.INVEST === 0) maxWilling *= 1.15;
+    // Aggression nudge (don't multiply twice — keep it modest)
+    let bid = Math.floor(maxWilling * (0.85 + 0.25 * t.aggression) * (0.85 + r() * 0.25));
+    // Hard ceiling: never bid value or above (would zero out the profit)
+    bid = Math.min(bid, valueToMe - 1);
     bid = Math.min(bid, p.money);
     bid = _capByOpponents(p, game, bid);
     return Math.max(0, bid);
