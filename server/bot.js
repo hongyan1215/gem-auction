@@ -296,12 +296,30 @@ function botPickBid(p, game) {
   const styleKey = String(style || '').toLowerCase();
   switch (styleKey) {
     case 'sniper': {
-      // Sniper: precise predator. Snipe at +1 over predicted opp max.
-      // Even without history, estimate from opp cash and intel-cap.
+      // CHEATER (peek mode): Sniper goes LAST and sees everyone else's submitted bids.
+      // It reads game.bids directly, finds current max, and overbids by +1 if value supports it.
       const expectedValue = lotValue + missionBonus + oneAwayBonus + diversityBonus;
+      let peekMax = -1;
+      try {
+        if (game && game.bids && typeof game.bids.forEach === 'function') {
+          game.bids.forEach((amt, pid) => {
+            if (pid !== p.id && typeof amt === 'number' && amt > peekMax) peekMax = amt;
+          });
+        }
+      } catch {}
+      if (peekMax >= 0 && p.money >= 1) {
+        const target = Math.min(p.money, peekMax + 1);
+        const profit = expectedValue - target;
+        // Snipe if profitable, OR if cheap (peekMax<=2) and value≥3 — steal cheap lots
+        if (profit >= 0.5 || (peekMax <= 2 && expectedValue >= 3)) {
+          return Math.max(1, target);
+        }
+        // If everyone bid 0 and value is decent, grab for 1
+        if (peekMax === 0 && expectedValue >= 2) return Math.min(1, p.money);
+      }
+      // Fall back to legacy logic if no peek data (shouldn't happen if ordering works)
       let predOpp = predictedOppMax;
       if (predOpp == null) {
-        // Fall back: assume best opp will bid up to 50% of their money
         let maxOppCash = 0;
         for (const opp of game.players) {
           if (opp.id === p.id) continue;
@@ -313,7 +331,6 @@ function botPickBid(p, game) {
         const target = Math.min(p.money, Math.ceil(predOpp + 1 + r() * 1.2));
         const profit = expectedValue - target;
         if (profit >= 0.5) {
-          // Lock in the win
           return Math.max(1, target);
         }
       }

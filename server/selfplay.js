@@ -30,7 +30,13 @@ function runOne() {
   let safety = 200;
   while (game.phase !== 'GAME_OVER' && safety-- > 0) {
     if (game.phase === 'BIDDING') {
-      for (const p of game.players) {
+      // Sniper peeks: it bids LAST so it can read game.bids
+      const order = [...game.players].sort((a, b) => {
+        const sa = (a.profile?.style || a.name || '').toLowerCase() === 'sniper' ? 1 : 0;
+        const sb = (b.profile?.style || b.name || '').toLowerCase() === 'sniper' ? 1 : 0;
+        return sa - sb;
+      });
+      for (const p of order) {
         const bid = botPickBid(p, game);
         game.submitBid(p.id, bid);
       }

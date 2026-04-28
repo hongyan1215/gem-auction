@@ -203,7 +203,11 @@ class Room {
     if (!this.game || this.game.phase !== 'BIDDING') return;
     for (const p of this.game.players) {
       if (!p.isBot || this.game.hasBid(p.id)) continue;
-      const delay = 800 + Math.random() * (BID_DURATION_MS - 2500);
+      const isSniper = (p.profile?.style || '').toLowerCase() === 'sniper';
+      // Sniper cheats by peeking — schedule it last (after all other bots)
+      const delay = isSniper
+        ? BID_DURATION_MS - 600 - Math.random() * 400
+        : 800 + Math.random() * (BID_DURATION_MS - 3500);
       setTimeout(() => {
         if (this.game && this.game.phase === 'BIDDING' && !this.game.hasBid(p.id)) {
           const bid = botPickBid(p, this.game);
