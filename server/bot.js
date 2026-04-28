@@ -54,7 +54,10 @@ function botPickBid(p, game) {
     // BUT current cash can buy gems → indirect value. Worth ~20-40% of received cash.
     const cashUtility = 0.35 + 0.45 * t.loanLover; // 0.35 .. 0.80
     const debtAlready = (p.loans || []).reduce((a, l) => a + l.value, 0);
-    const debtPenalty = Math.min(1.0, debtAlready / 30); // discourage stacking
+    // HARD STOP: refuse loans if already deep in debt (intelligence-gated)
+    if (debtAlready >= 20 && t.intelligence >= 0.4) return 0;
+    if (debtAlready >= 30) return 0;
+    const debtPenalty = Math.min(1.0, debtAlready / 25); // discourage stacking
     const willingnessFactor = (1 - debtPenalty) * cashUtility;
     // OPENING PHASE COOLDOWN: in first 3 rounds, slash loan interest
     const earlyCooldown = game.round <= 3 ? 0.55 : 1.0;
@@ -207,35 +210,53 @@ function botPickBid(p, game) {
       break;
     case 'aggressor':
       // Cash discipline: don't bleed below 8 unless huge value
-      if (p.money < 8 && base < 14) personalityMult = 0.6 + r() * 0.2;
+      if (p.money < 8 && base < 14) personalityMult = 0.55 + r() * 0.2;
+      // Aggressor still uses opp-aware sniping below
       break;
     case 'hoarder':
-      // hoard cash early, strike late when gems are scarce
-      personalityMult = (progress < 0.45 ? 0.65 : 0.95) + r() * 0.18;
+      // hoard cash early, strike hard late when gems are scarce
+      personalityMult = (progress < 0.4 ? 0.75 : 1.05) + r() * 0.18;
       break;
   }
 
   let bid = Math.floor(base * personalityMult);
 
-  // Opponent-aware sniping (most styles)
+  // Opponent-aware sniping: bid just enough to win, not more
   if (predictedOppMax != null && t.intelligence >= 0.5 && styleKey !== 'wildcard' && styleKey !== 'newbie' && styleKey !== 'sniper') {
     const myValue = lotValue + missionBonus + diversityBonus + oneAwayBonus;
-    const targetBid = Math.ceil(predictedOppMax + 1 + r() * 2);
-    if (myValue >= targetBid + 2 && targetBid < bid) {
-      bid = Math.max(targetBid, bid - 4);
-    } else if (myValue >= targetBid + 1 && bid < targetBid && bid > 0) {
-      bid = Math.min(targetBid, Math.floor(myValue - 1));
+    const targetBid = Math.ceil(predictedOppMax + 1 + r() * 1.5);
+    // If I'd profit at the snipe price, snipe (cap my bid down OR push up just to win)
+    if (myValue >= targetBid + 1) {
+      // Choose min(currentBid, targetBid) but never below 1 if we want it
+      if (bid > targetBid) bid = targetBid;
+      else if (bid < targetBid && bid > 0) bid = Math.min(targetBid, Math.floor(myValue));
+    } else {
+      // Can't profitably snipe: don't overbid past my value
+      if (bid > myValue) bid = Math.max(0, Math.floor(myValue));
     }
   }
 
-  // Opportunity cost: net must be >= 0 for smart bots
+  // Opportunity cost: smart bots refuse to overpay
   const totalValueToMe = lotValue + missionBonus + diversityBonus + oneAwayBonus + blockBonus * 0.5;
-  if (t.intelligence >= 0.55 && bid > totalValueToMe) {
-    bid = Math.floor(totalValueToMe);
+  if (t.intelligence >= 0.4) {
+    // Smarter = stricter margin (won't pay full value)
+    const margin = Math.max(0, Math.floor(t.intelligence * 2 - 0.5));
+    if (bid > totalValueToMe - margin) {
+      bid = Math.max(0, Math.floor(totalValueToMe - margin));
+    }
   }
 
   // ============ HARD CAP: don't overpay vs opponents' available cash ============
   bid = _capByOpponents(p, game, bid);
+
+  // ============ MINIMUM-FLOOR: don't pass on obviously valuable lots ============
+  // If lot has positive net value and we have cash, at least throw a minimal bid in.
+  const netValue = lotValue + missionBonus + diversityBonus + oneAwayBonus;
+  if (netValue >= 6 && p.money >= 2 && bid < 1 && t.intelligence >= 0.5) {
+    bid = 1 + Math.floor(r() * Math.min(3, p.money - 1));
+  } else if (netValue >= 10 && p.money >= 3 && bid < 2 && t.intelligence >= 0.4) {
+    bid = 2 + Math.floor(r() * Math.min(3, p.money - 2));
+  }
 
   bid = Math.max(0, Math.min(bid, p.money));
   return bid;
@@ -270,29 +291,32 @@ function _visibleUnusedCounts(game) {
 }
 
 function _predictOppMax(p, game, card, lot, t) {
-  if (t.intelligence < 0.55 || !game.bidHistory || game.bidHistory.length < 2) return null;
+  if (t.intelligence < 0.5) return null;
   let maxPred = 0;
+  const hasHistory = game.bidHistory && game.bidHistory.length >= 1;
   for (const opp of game.players) {
     if (opp.id === p.id) continue;
     let total = 0, n = 0;
-    for (const h of game.bidHistory) {
-      if (h.cardKind !== card.kind) continue;
-      if (h.cardKind === 'AUCTION_GEM' && h.lotSize !== lot.length) continue;
-      const b = h.bids[opp.id];
-      if (typeof b === 'number') { total += b; n++; }
+    if (hasHistory) {
+      for (const h of game.bidHistory) {
+        if (h.cardKind !== card.kind) continue;
+        if (h.cardKind === 'AUCTION_GEM' && h.lotSize !== lot.length) continue;
+        const b = h.bids[opp.id];
+        if (typeof b === 'number') { total += b; n++; }
+      }
     }
+    let pred;
     if (n >= 1) {
       const avg = total / n;
-      const cashRatio = Math.max(0.3, Math.min(1.4, opp.money / 12));
-      let pred = avg * cashRatio;
-      // Hard cap at their actual money — cannot bid more
-      pred = Math.min(pred, opp.money);
-      if (pred > maxPred) maxPred = pred;
+      // Cash ratio: relative to starting money 20
+      const cashRatio = Math.max(0.4, Math.min(1.5, opp.money / 14));
+      pred = avg * cashRatio;
     } else {
-      // No history yet — assume opp could bid up to half their money
-      const guess = Math.min(opp.money, opp.money * 0.5);
-      if (guess > maxPred) maxPred = guess;
+      // No history — assume opp will bid up to ~40% of their money on a typical lot
+      pred = opp.money * 0.4;
     }
+    pred = Math.min(pred, opp.money);
+    if (pred > maxPred) maxPred = pred;
   }
   return maxPred;
 }
