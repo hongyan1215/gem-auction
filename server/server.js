@@ -37,11 +37,28 @@ class Room {
     };
   }
 
-  addMember(socketId, name) {
+  addMember(socketId, name, playerKey) {
     if (this.members.find(m => m.socketId === socketId)) return null;
     if (this.members.length >= PLAYERS) return null;
-    const member = { socketId, id: 'p_' + socketId.slice(0, 8), name };
+    const member = { socketId, id: 'p_' + Math.random().toString(36).slice(2, 10), name, playerKey };
     this.members.push(member);
+    return member;
+  }
+
+  // Reattach a returning player by their persistent key. Returns the member or null.
+  rejoin(socketId, playerKey) {
+    if (!playerKey) return null;
+    const member = this.members.find(m => m.playerKey === playerKey);
+    if (!member) return null;
+    member.socketId = socketId;
+    if (this.game) {
+      const p = this.game.players.find(pl => pl.id === member.id);
+      if (p) {
+        p.connected = true;
+        p.isBot = false;
+        p.profile = null;
+      }
+    }
     return member;
   }
 
@@ -52,8 +69,12 @@ class Room {
   }
 
   start() {
-    // Fill with bots
+    // Shuffle members so seats are randomised each game
     const playerSpecs = this.members.slice();
+    for (let i = playerSpecs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [playerSpecs[i], playerSpecs[j]] = [playerSpecs[j], playerSpecs[i]];
+    }
     while (playerSpecs.length < PLAYERS) {
       const profile = makeBotProfile();
       playerSpecs.push({
@@ -164,6 +185,7 @@ class Room {
       return;
     }
     for (const m of this.members) {
+      if (!m.socketId) continue;
       io.to(m.socketId).emit('state', this.game.publicSnapshot(m.id));
     }
   }
@@ -180,11 +202,11 @@ function makeRoomCode() {
 io.on('connection', (socket) => {
   socket.data.roomCode = null;
 
-  socket.on('createRoom', ({ name }, cb) => {
+  socket.on('createRoom', ({ name, playerKey }, cb) => {
     const code = (() => { let c; do { c = makeRoomCode(); } while (rooms.has(c)); return c; })();
     const room = new Room(code, socket.id);
     rooms.set(code, room);
-    const member = room.addMember(socket.id, name || 'Player');
+    const member = room.addMember(socket.id, name || 'Player', playerKey);
     socket.join(code);
     socket.data.roomCode = code;
     socket.data.memberId = member.id;
@@ -192,16 +214,39 @@ io.on('connection', (socket) => {
     room._broadcast();
   });
 
-  socket.on('joinRoom', ({ code, name }, cb) => {
+  socket.on('joinRoom', ({ code, name, playerKey }, cb) => {
     const room = rooms.get(String(code || '').toUpperCase());
     if (!room) return cb && cb({ ok: false, reason: 'no_room' });
-    if (room.game) return cb && cb({ ok: false, reason: 'started' });
-    const member = room.addMember(socket.id, name || 'Player');
+    // If game already running, attempt rejoin via persistent key
+    if (room.game) {
+      const member = room.rejoin(socket.id, playerKey);
+      if (!member) return cb && cb({ ok: false, reason: 'started' });
+      socket.join(room.code);
+      socket.data.roomCode = room.code;
+      socket.data.memberId = member.id;
+      cb && cb({ ok: true, code: room.code, you: member, rejoined: true });
+      room._broadcast();
+      return;
+    }
+    const member = room.addMember(socket.id, name || 'Player', playerKey);
     if (!member) return cb && cb({ ok: false, reason: 'full' });
     socket.join(room.code);
     socket.data.roomCode = room.code;
     socket.data.memberId = member.id;
     cb && cb({ ok: true, code: room.code, you: member });
+    room._broadcast();
+  });
+
+  // Pure rejoin: client knows code+key and just wants to reattach
+  socket.on('rejoin', ({ code, playerKey }, cb) => {
+    const room = rooms.get(String(code || '').toUpperCase());
+    if (!room) return cb && cb({ ok: false, reason: 'no_room' });
+    const member = room.rejoin(socket.id, playerKey);
+    if (!member) return cb && cb({ ok: false, reason: 'no_seat' });
+    socket.join(room.code);
+    socket.data.roomCode = room.code;
+    socket.data.memberId = member.id;
+    cb && cb({ ok: true, code: room.code, you: member, rejoined: true });
     room._broadcast();
   });
 
@@ -249,14 +294,15 @@ io.on('connection', (socket) => {
     const room = rooms.get(code);
     if (!room) return;
     if (room.game) {
-      // Mark disconnected; bots take over their bids
+      // Mark disconnected; bots take over their bids. Keep member in list for rejoin.
       const p = room.game.players.find(p => p.id === socket.data.memberId);
       if (p) {
         p.connected = false;
         p.isBot = true;
         p.profile = makeBotProfile();
       }
-      room.members = room.members.filter(m => m.socketId !== socket.id);
+      const m = room.members.find(m => m.socketId === socket.id);
+      if (m) m.socketId = null; // keep playerKey for potential rejoin
       room._broadcast();
       room._maybeBotTurns();
     } else {

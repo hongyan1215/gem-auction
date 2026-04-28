@@ -586,37 +586,72 @@ function Game({ snap, socket, myId }) {
   );
 }
 
+function getPlayerKey() {
+  let k = localStorage.getItem('ga_pkey');
+  if (!k) {
+    k = 'k_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem('ga_pkey', k);
+  }
+  return k;
+}
+
 function App() {
   const [socket, setSocket] = useState(null);
   const [snap, setSnap] = useState(null);
   const [myId, setMyId] = useState(null);
+  const [rejoinTried, setRejoinTried] = useState(false);
 
   useEffect(() => {
     const s = io();
     setSocket(s);
     s.on('state', (st) => setSnap(st));
-    s.on('connect', () => console.log('connected', s.id));
+    s.on('connect', () => {
+      console.log('connected', s.id);
+      // Try auto-rejoin if we have a saved room+key
+      const code = localStorage.getItem('ga_room');
+      const pkey = getPlayerKey();
+      if (code) {
+        s.emit('rejoin', { code, playerKey: pkey }, (r) => {
+          if (r && r.ok && r.you) {
+            setMyId(r.you.id);
+          } else {
+            // Stale room — clean it up so Lobby shows
+            localStorage.removeItem('ga_room');
+          }
+          setRejoinTried(true);
+        });
+      } else {
+        setRejoinTried(true);
+      }
+    });
     return () => s.disconnect();
   }, []);
 
-  // Capture myId from createRoom/joinRoom callback via custom prop drilling
+  // Capture myId from createRoom/joinRoom callback + persist room code
   useEffect(() => {
     if (!socket) return;
-    const wrap = (orig) => function (event, ...args) {
+    const orig = socket.emit.bind(socket);
+    socket.emit = function (event, ...args) {
       if (event === 'createRoom' || event === 'joinRoom') {
+        // Inject persistent player key into payload
+        if (args[0] && typeof args[0] === 'object') args[0].playerKey = getPlayerKey();
         const cb = args[args.length - 1];
         if (typeof cb === 'function') {
-          args[args.length - 1] = (r) => { if (r.ok && r.you) setMyId(r.you.id); cb(r); };
+          args[args.length - 1] = (r) => {
+            if (r && r.ok && r.you) {
+              setMyId(r.you.id);
+              if (r.code) localStorage.setItem('ga_room', r.code);
+            }
+            cb(r);
+          };
         }
       }
-      return orig.apply(socket, [event, ...args]);
+      return orig(event, ...args);
     };
-    const orig = socket.emit.bind(socket);
-    socket.emit = wrap(orig);
     return () => { socket.emit = orig; };
   }, [socket]);
 
-  if (!socket) return <div className="p-8">連線中…</div>;
+  if (!socket || !rejoinTried) return <div className="p-8">連線中…</div>;
   if (!snap || snap.phase === 'WAITING' || !myId) return <Lobby socket={socket} onState={setSnap} />;
   return <Game snap={snap} socket={socket} myId={myId} />;
 }
