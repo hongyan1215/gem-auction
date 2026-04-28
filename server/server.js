@@ -204,9 +204,9 @@ class Room {
     for (const p of this.game.players) {
       if (!p.isBot || this.game.hasBid(p.id)) continue;
       const isSniper = (p.profile?.style || '').toLowerCase() === 'sniper';
-      // Sniper cheats by peeking — schedule it last (after all other bots)
+      // Sniper cheats by peeking — schedule it absolute last (final 200ms)
       const delay = isSniper
-        ? BID_DURATION_MS - 600 - Math.random() * 400
+        ? BID_DURATION_MS - 200 - Math.random() * 100
         : 800 + Math.random() * (BID_DURATION_MS - 3500);
       setTimeout(() => {
         if (this.game && this.game.phase === 'BIDDING' && !this.game.hasBid(p.id)) {
@@ -216,6 +216,28 @@ class Room {
         }
       }, delay);
     }
+  }
+
+  _maybeFireSniperEarly() {
+    // Called after a human submits a bid. If every non-Sniper has bid, fire Sniper now
+    // so it peeks at the real human bid instead of waiting for the timer.
+    if (!this.game || this.game.phase !== 'BIDDING') return;
+    const sniper = this.game.players.find(p =>
+      p.isBot && (p.profile?.style || '').toLowerCase() === 'sniper' && !this.game.hasBid(p.id)
+    );
+    if (!sniper) return;
+    for (const p of this.game.players) {
+      if (p.id === sniper.id) continue;
+      if (!this.game.hasBid(p.id)) return; // someone (human or bot) hasn't bid yet
+    }
+    // All non-Sniper bids in — fire Sniper immediately (small jitter to look natural)
+    setTimeout(() => {
+      if (this.game && this.game.phase === 'BIDDING' && !this.game.hasBid(sniper.id)) {
+        const bid = botPickBid(sniper, this.game);
+        this.game.submitBid(sniper.id, bid);
+        this._broadcast();
+      }
+    }, 250 + Math.random() * 200);
   }
 
   _broadcast() {
@@ -314,6 +336,7 @@ io.on('connection', (socket) => {
     const r = room.game.submitBid(socket.data.memberId, amount);
     cb && cb(r);
     room._broadcast();
+    if (r && r.ok) room._maybeFireSniperEarly();
   });
 
   socket.on('reveal', ({ gem }, cb) => {
