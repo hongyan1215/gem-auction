@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Gem Auction · 寶石盲拍</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body { background: radial-gradient(ellipse at top, #1a1a2e 0%, #0f0f1e 100%); color: #e8e8f0; font-family: 'Inter', system-ui, sans-serif; min-height: 100vh; }
+  .gem { width: 28px; height: 28px; border-radius: 50%; display: inline-block; box-shadow: 0 2px 8px rgba(0,0,0,0.5), inset 0 1px 2px rgba(255,255,255,0.4); }
+  .gem-RUBY      { background: radial-gradient(circle at 30% 30%, #ff6b8a, #c41e3a); }
+  .gem-SAPPHIRE  { background: radial-gradient(circle at 30% 30%, #6fa8ff, #1e3a8a); }
+  .gem-EMERALD   { background: radial-gradient(circle at 30% 30%, #6fee8a, #047857); }
+  .gem-TOPAZ     { background: radial-gradient(circle at 30% 30%, #ffd76f, #d97706); }
+  .gem-AMETHYST  { background: radial-gradient(circle at 30% 30%, #d68fff, #7c3aed); }
+  .gem-hidden    { background: radial-gradient(circle at 30% 30%, #555, #222); }
+  .glow { box-shadow: 0 0 20px rgba(255, 215, 0, 0.6); }
+  .pulse-ring { animation: pulse-ring 1.5s infinite; }
+  @keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgba(255,215,0,0.7); } 70% { box-shadow: 0 0 0 12px rgba(255,215,0,0); } 100% { box-shadow: 0 0 0 0 rgba(255,215,0,0); } }
+  .card-bg { background: linear-gradient(135deg, #2d2d44 0%, #1f1f33 100%); border: 1px solid #404060; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo } = React;
+const GEM_TYPES = ['RUBY', 'SAPPHIRE', 'EMERALD', 'TOPAZ', 'AMETHYST'];
+const GEM_LABEL = { RUBY: '紅寶', SAPPHIRE: '藍寶', EMERALD: '綠寶', TOPAZ: '黃寶', AMETHYST: '紫晶' };
+const Vfn = (n) => n <= 0 ? 0 : Math.min(4 * n, 20);
+
+function Gem({ type, size = 28, hidden = false, onClick, title }) {
+  return <span title={title} onClick={onClick} className={'gem gem-' + (hidden ? 'hidden' : type) + (onClick ? ' cursor-pointer hover:scale-110 transition' : '')} style={{ width: size, height: size }} />;
+}
+
+function Countdown({ deadline }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const id = setInterval(() => setNow(Date.now()), 100); return () => clearInterval(id); }, []);
+  const ms = Math.max(0, deadline - now);
+  const pct = Math.min(100, ms / 100);
+  const sec = (ms / 1000).toFixed(1);
+  return (
+    <div className="w-full">
+      <div className="flex justify-between text-xs mb-1"><span>倒數</span><span className="font-mono text-amber-300">{sec}s</span></div>
+      <div className="h-2 bg-slate-700 rounded overflow-hidden">
+        <div className={'h-full transition-all duration-100 ' + (ms < 3000 ? 'bg-rose-500' : 'bg-amber-400')} style={{ width: pct + '%' }} />
+      </div>
+    </div>
+  );
+}
+
+function MissionBadge({ m }) {
+  let label = '';
+  if (m.type === 'TWO_SPECIFIC') label = '+5 集 ' + m.gems.map(g => GEM_LABEL[g]).join('+');
+  else if (m.type === 'THREE_SPECIFIC') label = '+10 集 ' + m.gems.map(g => GEM_LABEL[g]).join('+');
+  else if (m.type === 'FOUR_DIFFERENT') label = '+10 4 種不同寶石';
+  else if (m.type === 'THREE_OF_A_KIND') label = '+10 同種寶石 ×3';
+  return (
+    <div className={'p-2 rounded text-xs ' + (m.completedBy ? 'bg-emerald-900/40 text-emerald-300 line-through' : 'card-bg')}>
+      {label}
+      {m.completedBy && <div className="text-[10px] opacity-70">完成</div>}
+    </div>
+  );
+}
+
+function ValueTable({ snap, viewerHidden }) {
+  // V(n) estimate: visible revealed + own hidden
+  const c = {};
+  for (const p of snap.players) for (const g of p.revealedGems) c[g] = (c[g] || 0) + 1;
+  for (const g of (viewerHidden || [])) c[g] = (c[g] || 0) + 1;
+  // unknown hidden = totalHidden - own's
+  const totalKnown = Object.values(c).reduce((a, b) => a + b, 0);
+  const totalHidden = snap.players.reduce((a, p) => a + p.hiddenCount, 0) + (viewerHidden ? viewerHidden.length : 0);
+  // Also +revealed but already counted
+  return (
+    <div className="card-bg rounded-lg p-3">
+      <div className="text-xs uppercase tracking-wide opacity-70 mb-2">寶石價值表 V(n) <span className="text-[10px]">已知n / 預估</span></div>
+      <div className="grid grid-cols-5 gap-2">
+        {GEM_TYPES.map(t => {
+          const n = c[t] || 0;
+          return (
+            <div key={t} className="text-center">
+              <Gem type={t} size={24} />
+              <div className="text-xs mt-1">n≥{n}</div>
+              <div className="text-amber-300 font-mono text-sm">{Vfn(n)}+</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CardDisplay({ card, lot }) {
+  if (!card) return <div className="text-slate-500">等待開牌…</div>;
+  let label, color;
+  if (card.kind === 'AUCTION_GEM') { label = '寶石拍賣 ×' + (card.size); color = 'from-amber-700 to-amber-900'; }
+  else if (card.kind === 'INVEST') { label = '投資 +' + card.value + '分'; color = 'from-emerald-700 to-emerald-900'; }
+  else if (card.kind === 'LOAN') { label = '貸款 ' + card.value + '/-' + card.value; color = 'from-rose-700 to-rose-900'; }
+  return (
+    <div className={'rounded-lg bg-gradient-to-br ' + color + ' p-4 glow pulse-ring'}>
+      <div className="text-xs opacity-80">本回合拍賣</div>
+      <div className="text-xl font-bold">{label}</div>
+      {lot && lot.length > 0 && (
+        <div className="mt-3 flex gap-2">{lot.map((g, i) => <Gem key={i} type={g} size={36} />)}</div>
+      )}
+    </div>
+  );
+}
+
+function PlayerCard({ p, isMe, isWinner, onReveal, canReveal }) {
+  return (
+    <div className={'card-bg rounded-lg p-3 ' + (isMe ? 'ring-2 ring-amber-400' : '') + (isWinner ? ' glow' : '')}>
+      <div className="flex justify-between items-start">
+        <div>
+          <div className="text-sm font-bold">{p.name} {p.isBot && <span className="text-[10px] opacity-60">(AI)</span>}</div>
+          <div className="text-xs opacity-70">座位 {p.seat + 1}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-amber-300 font-mono text-lg">${p.money}</div>
+          {p.score > 0 && <div className="text-emerald-300 text-xs">+{p.score}分</div>}
+        </div>
+      </div>
+      <div className="mt-2">
+        <div className="text-[10px] opacity-60">已得寶石 ({p.wonGems.length})</div>
+        <div className="flex flex-wrap gap-1 mt-1 min-h-[20px]">
+          {p.wonGems.map((g, i) => <Gem key={i} type={g} size={18} />)}
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+        <div>
+          <div className="opacity-60">公開隱藏 ({p.revealedGems.length})</div>
+          <div className="flex flex-wrap gap-0.5">{p.revealedGems.map((g, i) => <Gem key={i} type={g} size={16} />)}</div>
+        </div>
+        <div>
+          <div className="opacity-60">未知隱藏 ({p.hiddenCount})</div>
+          <div className="flex flex-wrap gap-0.5">
+            {isMe && p.hiddenGems
+              ? p.hiddenGems.map((g, i) => (
+                  <Gem key={i} type={g} size={16} title={canReveal ? '點擊公開' : ''} onClick={canReveal ? () => onReveal(g) : null} />
+                ))
+              : Array.from({ length: p.hiddenCount }).map((_, i) => <Gem key={i} hidden size={16} />)}
+          </div>
+        </div>
+      </div>
+      {(p.investments > 0 || p.loans > 0) && (
+        <div className="mt-2 flex gap-2 text-[11px]">
+          {p.investments > 0 && <span className="text-emerald-300">投資×{p.investments}</span>}
+          {p.loans > 0 && <span className="text-rose-300">貸款×{p.loans}</span>}
+        </div>
+      )}
+      {p.hasBid && <div className="mt-1 text-[10px] text-amber-400">✓ 已出價</div>}
+      {!p.hasBid && p.connected !== false && <div className="mt-1 text-[10px] opacity-50">思考中…</div>}
+    </div>
+  );
+}
+
+function BidInput({ snap, me, onSubmit }) {
+  const [amt, setAmt] = useState(0);
+  const [submitted, setSubmitted] = useState(0);
+  useEffect(() => { setSubmitted(0); setAmt(0); }, [snap.round]);
+  const max = me ? me.money : 0;
+  return (
+    <div className="card-bg rounded-lg p-3">
+      <div className="text-xs opacity-70 mb-2">你的出價 (上限 ${max})</div>
+      <div className="flex items-center gap-3">
+        <input type="range" min="0" max={max} value={amt} onChange={(e) => setAmt(parseInt(e.target.value))} className="flex-1" />
+        <input type="number" min="0" max={max} value={amt} onChange={(e) => setAmt(Math.max(0, Math.min(max, parseInt(e.target.value) || 0)))} className="w-16 bg-slate-800 rounded px-2 py-1 text-amber-300 font-mono" />
+        <button
+          onClick={() => { onSubmit(amt); setSubmitted(amt); }}
+          className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold rounded"
+        >{submitted ? `已出 $${submitted} (可改)` : '確認出價'}</button>
+      </div>
+    </div>
+  );
+}
+
+function Lobby({ socket, onState }) {
+  const [name, setName] = useState(localStorage.getItem('ga_name') || '');
+  const [code, setCode] = useState('');
+  const [room, setRoom] = useState(null);
+  const [error, setError] = useState('');
+  const [iAmHost, setIAmHost] = useState(false);
+
+  useEffect(() => {
+    if (!socket) return;
+    const onLobby = (lobby) => setRoom(lobby);
+    socket.on('lobby', onLobby);
+    return () => socket.off('lobby', onLobby);
+  }, [socket]);
+
+  const create = () => {
+    if (!name.trim()) return setError('請輸入名字');
+    localStorage.setItem('ga_name', name);
+    socket.emit('createRoom', { name }, (r) => {
+      if (r.ok) { setRoom({ code: r.code, members: [r.you], started: false }); setIAmHost(true); }
+      else setError('建立失敗');
+    });
+  };
+  const join = () => {
+    if (!name.trim() || !code.trim()) return setError('請輸入名字與房號');
+    localStorage.setItem('ga_name', name);
+    socket.emit('joinRoom', { code, name }, (r) => {
+      if (r.ok) { setIAmHost(false); }
+      else setError(r.reason === 'no_room' ? '房號不存在' : r.reason === 'full' ? '房間已滿' : '已開始');
+    });
+  };
+  const start = () => socket.emit('startGame', {}, (r) => { if (!r.ok) setError(r.reason); });
+
+  return (
+    <div className="max-w-md mx-auto mt-12 card-bg rounded-xl p-6">
+      <h1 className="text-3xl font-bold mb-2">💎 寶石盲拍</h1>
+      <p className="text-sm opacity-70 mb-6">5 人即時盲標 · 隱藏資訊 · 任務解鎖</p>
+
+      <input className="w-full bg-slate-800 rounded p-2 mb-3" placeholder="你的名字" value={name} onChange={(e) => setName(e.target.value)} />
+
+      {!room ? (
+        <>
+          <button onClick={create} className="w-full bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold py-2 rounded mb-3">建立房間</button>
+          <div className="flex gap-2">
+            <input className="flex-1 bg-slate-800 rounded p-2 uppercase" placeholder="房號 (例: ABCD)" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
+            <button onClick={join} className="px-4 bg-slate-700 hover:bg-slate-600 rounded">加入</button>
+          </div>
+          <details className="mt-4 text-xs opacity-70">
+            <summary className="cursor-pointer">遊戲說明</summary>
+            <ul className="list-disc pl-5 mt-2 space-y-1">
+              <li>每人起始 $20、3 顆隱藏寶石。</li>
+              <li>每回合翻一張卡：拍賣寶石 / 投資 / 貸款。</li>
+              <li>10 秒內盲標出價，最高得標。</li>
+              <li>得標寶石被迫公開 1 顆隱藏寶石（影響市價）。</li>
+              <li>寶石價值 V(n)=min(4n, 20)，n=未進入拍賣的同色數。</li>
+              <li>15 顆寶石全部拍完即結算。</li>
+            </ul>
+          </details>
+        </>
+      ) : (
+        <>
+          <div className="text-center mb-4">
+            <div className="text-xs opacity-60">房號</div>
+            <div className="text-4xl font-mono font-bold tracking-widest text-amber-300">{room.code}</div>
+            <div className="text-xs mt-1 opacity-60">分享給朋友 (空位由 AI 補)</div>
+          </div>
+          <div className="space-y-2 mb-4">
+            {room.members.map(m => (
+              <div key={m.id} className="bg-slate-800 rounded px-3 py-2 flex justify-between">
+                <span>{m.name}</span>
+                <span className="text-xs opacity-50">{m.id === room.members[0].id ? '房主' : ''}</span>
+              </div>
+            ))}
+            {Array.from({ length: 5 - room.members.length }).map((_, i) => (
+              <div key={i} className="bg-slate-800/50 rounded px-3 py-2 text-slate-500 text-sm">空位 (AI)</div>
+            ))}
+          </div>
+          {iAmHost && <button onClick={start} className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-bold py-2 rounded">開始遊戲</button>}
+          {!iAmHost && <div className="text-center text-sm opacity-70">等待房主開始…</div>}
+        </>
+      )}
+      {error && <div className="mt-3 text-rose-400 text-sm">{error}</div>}
+    </div>
+  );
+}
+
+function GameOver({ snap }) {
+  const r = snap.endgame.results;
+  return (
+    <div className="card-bg rounded-xl p-6 max-w-3xl mx-auto">
+      <h2 className="text-2xl font-bold mb-4">🏆 結算 · {r[0].name} 獲勝!</h2>
+      <table className="w-full text-sm">
+        <thead><tr className="text-left opacity-60"><th>名次</th><th>玩家</th><th>金幣</th><th>寶石</th><th>投資</th><th>貸款</th><th>任務</th><th>總分</th></tr></thead>
+        <tbody>
+          {r.map((p, i) => (
+            <tr key={p.id} className={i === 0 ? 'text-amber-300 font-bold' : ''}>
+              <td>#{i + 1}</td><td>{p.name}</td><td>${p.money}</td><td>{p.gemScore}</td><td>+{p.investBonus}</td><td>-{p.loanPenalty}</td><td>+{p.missionScore}</td><td className="text-lg">{p.total}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="mt-4 text-xs opacity-60">
+        最終市價: {GEM_TYPES.map(t => `${GEM_LABEL[t]} ${snap.endgame.finalValue[t]}`).join(' · ')}
+      </div>
+      <button onClick={() => location.reload()} className="mt-4 px-4 py-2 bg-amber-500 text-slate-900 rounded font-bold">再玩一局</button>
+    </div>
+  );
+}
+
+function Game({ snap, socket, myId }) {
+  const me = snap.players.find(p => p.id === myId);
+  const others = snap.players.filter(p => p.id !== myId);
+  const winnerSeat = snap.winner ? snap.winner.seat : null;
+
+  const onBid = (amount) => socket.emit('submitBid', { amount });
+  const onReveal = (gem) => socket.emit('reveal', { gem });
+
+  const canReveal = snap.phase === 'AWAITING_REVEAL' && snap.winner && snap.winner.playerId === myId;
+
+  if (snap.phase === 'GAME_OVER') return <GameOver snap={snap} />;
+
+  return (
+    <div className="grid grid-cols-12 gap-4 max-w-7xl mx-auto p-4">
+      {/* Top: opponents */}
+      <div className="col-span-12 grid grid-cols-4 gap-3">
+        {others.map(p => <PlayerCard key={p.id} p={p} isWinner={p.seat === winnerSeat} />)}
+      </div>
+
+      {/* Center */}
+      <div className="col-span-12 lg:col-span-8 space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <CardDisplay card={snap.currentCard} lot={snap.currentLot} />
+          <div className="card-bg rounded-lg p-3">
+            <div className="text-xs uppercase tracking-wide opacity-70 mb-2">展示區 (待拍賣)</div>
+            <div className="flex gap-2 min-h-[40px] items-center">
+              {snap.market.map((g, i) => <Gem key={i} type={g} size={32} />)}
+              {snap.market.length === 0 && <span className="text-slate-500 text-sm">無</span>}
+            </div>
+            <div className="mt-2 text-xs opacity-60">回合 {snap.round} · 剩餘寶石待拍 {15 - snap.gemsAuctionedCount}</div>
+          </div>
+        </div>
+
+        {snap.phase === 'BIDDING' && <Countdown deadline={snap.bidDeadline} />}
+        {snap.phase === 'AWAITING_REVEAL' && (
+          <div className="card-bg rounded-lg p-3 bg-rose-900/30">
+            <div className="text-amber-300 font-bold">{snap.players[snap.winner.seat].name} 得標 ${snap.winner.amount}</div>
+            {canReveal && <div className="mt-1 text-sm">↓ 點選一顆隱藏寶石公開</div>}
+            {!canReveal && <div className="mt-1 text-xs opacity-70">等待公開隱藏寶石…</div>}
+            <Countdown deadline={snap.revealDeadline} />
+          </div>
+        )}
+        {snap.phase === 'RESOLVING' && (
+          <div className="card-bg rounded-lg p-3 bg-emerald-900/20">
+            <div className="text-amber-300 font-bold">{snap.players[snap.winner.seat].name} 以 ${snap.winner.amount} 得標!</div>
+          </div>
+        )}
+
+        <ValueTable snap={snap} viewerHidden={me ? me.hiddenGems : null} />
+
+        <div className="card-bg rounded-lg p-3">
+          <div className="text-xs uppercase tracking-wide opacity-70 mb-2">公開任務</div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+            {snap.missions.map((m, i) => <MissionBadge key={i} m={m} />)}
+          </div>
+        </div>
+      </div>
+
+      {/* Right: me */}
+      <div className="col-span-12 lg:col-span-4 space-y-3">
+        {me && <PlayerCard p={me} isMe isWinner={me.seat === winnerSeat} onReveal={onReveal} canReveal={canReveal} />}
+        {snap.phase === 'BIDDING' && me && <BidInput snap={snap} me={me} onSubmit={onBid} />}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [socket, setSocket] = useState(null);
+  const [snap, setSnap] = useState(null);
+  const [myId, setMyId] = useState(null);
+
+  useEffect(() => {
+    const s = io();
+    setSocket(s);
+    s.on('state', (st) => setSnap(st));
+    s.on('connect', () => console.log('connected', s.id));
+    return () => s.disconnect();
+  }, []);
+
+  // Capture myId from createRoom/joinRoom callback via custom prop drilling
+  useEffect(() => {
+    if (!socket) return;
+    const wrap = (orig) => function (event, ...args) {
+      if (event === 'createRoom' || event === 'joinRoom') {
+        const cb = args[args.length - 1];
+        if (typeof cb === 'function') {
+          args[args.length - 1] = (r) => { if (r.ok && r.you) setMyId(r.you.id); cb(r); };
+        }
+      }
+      return orig.apply(socket, [event, ...args]);
+    };
+    const orig = socket.emit.bind(socket);
+    socket.emit = wrap(orig);
+    return () => { socket.emit = orig; };
+  }, [socket]);
+
+  if (!socket) return <div className="p-8">連線中…</div>;
+  if (!snap || snap.phase === 'WAITING' || !myId) return <Lobby socket={socket} onState={setSnap} />;
+  return <Game snap={snap} socket={socket} myId={myId} />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
