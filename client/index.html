@@ -352,7 +352,7 @@ function Lobby({ socket, onState }) {
   );
 }
 
-function GameOver({ snap }) {
+function GameOver({ snap, socket }) {
   const r = snap.endgame.results;
   return (
     <div className="card-bg rounded-xl p-6 max-w-3xl mx-auto">
@@ -370,7 +370,18 @@ function GameOver({ snap }) {
       <div className="mt-4 text-xs opacity-60">
         最終市價: {GEM_TYPES.map(t => `${GEM_LABEL[t]} ${snap.endgame.finalValue[t]}`).join(' · ')}
       </div>
-      <button onClick={() => location.reload()} className="mt-4 px-4 py-2 bg-amber-500 text-slate-900 rounded font-bold">再玩一局</button>
+      <button
+        onClick={() => {
+          if (!socket) return location.reload();
+          socket.emit('restartGame', null, (r) => {
+            if (!r || !r.ok) {
+              // Fallback: hard reload if server can't restart
+              location.reload();
+            }
+          });
+        }}
+        className="mt-4 px-4 py-2 bg-amber-500 text-slate-900 rounded font-bold"
+      >再玩一局</button>
     </div>
   );
 }
@@ -511,7 +522,7 @@ function Game({ snap, socket, myId }) {
 
   const canReveal = snap.phase === 'AWAITING_REVEAL' && snap.winner && snap.winner.playerId === myId;
 
-  if (snap.phase === 'GAME_OVER') return <GameOver snap={snap} />;
+  if (snap.phase === 'GAME_OVER') return <GameOver snap={snap} socket={socket} />;
 
   // Build tie-order name string (skip round 1)
   let tieHint = null;
@@ -605,6 +616,7 @@ function App() {
     const s = io();
     setSocket(s);
     s.on('state', (st) => setSnap(st));
+    s.on('lobby', () => setSnap(null)); // game ended/reset → return to Lobby view
     s.on('connect', () => {
       console.log('connected', s.id);
       // Try auto-rejoin if we have a saved room+key

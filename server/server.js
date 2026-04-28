@@ -98,6 +98,23 @@ class Room {
     }, 10000);
   }
 
+  _clearAllTimers() {
+    clearTimeout(this.pregameTimer);
+    clearTimeout(this.bidTimer);
+    clearTimeout(this.revealTimer);
+    this.pregameTimer = null;
+    this.bidTimer = null;
+    this.revealTimer = null;
+  }
+
+  resetForReplay() {
+    this._clearAllTimers();
+    this.game = null;
+    // Drop bot members so the host can re-fill or wait for humans
+    this.members = this.members.filter(m => m.socketId !== null);
+    this._broadcast();
+  }
+
   _scheduleBidTimer() {
     clearTimeout(this.bidTimer);
     if (this.game.phase !== 'BIDDING') return;
@@ -256,6 +273,15 @@ io.on('connection', (socket) => {
     if (room.host !== socket.id) return cb && cb({ ok: false, reason: 'not_host' });
     if (room.game) return cb && cb({ ok: false, reason: 'started' });
     room.start();
+    cb && cb({ ok: true });
+  });
+
+  socket.on('restartGame', (_, cb) => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room) return cb && cb({ ok: false, reason: 'no_room' });
+    if (!room.game || room.game.phase !== 'GAME_OVER') return cb && cb({ ok: false, reason: 'not_over' });
+    // Anyone in the room can restart once the game is over (no host gating)
+    room.resetForReplay();
     cb && cb({ ok: true });
   });
 
