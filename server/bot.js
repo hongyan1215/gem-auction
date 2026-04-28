@@ -10,7 +10,7 @@ const BOT_ARCHETYPES = {
   Aggressor:     { aggression: 1.20, missionFocus: 0.75, intelligence: 0.90, signalAware: 0.75, loanLover: 0.55, investLover: 0.70 },
   Sniper:        { aggression: 1.10, missionFocus: 0.80, intelligence: 1.10, signalAware: 1.05, loanLover: 0.45, investLover: 0.85 },
   MissionHunter: { aggression: 1.15, missionFocus: 1.40, intelligence: 1.00, signalAware: 0.90, loanLover: 0.55, investLover: 0.70 },
-  LoanLover:     { aggression: 0.95, missionFocus: 0.70, intelligence: 0.90, signalAware: 0.75, loanLover: 0.65, investLover: 0.80 },
+  LoanLover:     { aggression: 1.05, missionFocus: 0.70, intelligence: 0.95, signalAware: 0.75, loanLover: 1.10, investLover: 0.80 },
   Wildcard:      { aggression: 1.15, missionFocus: 0.95, intelligence: 1.10, signalAware: 1.10, loanLover: 0.85, investLover: 0.90 },
   Newbie:        { aggression: 0.85, missionFocus: 0.55, intelligence: 0.55, signalAware: 0.50, loanLover: 0.50, investLover: 0.55 },
 };
@@ -143,6 +143,8 @@ function botPickBid(p, game) {
     // Simpler: bid up to value * (mult-1)/(mult+1) * margin
     const breakEven = card.value * Math.max(0, gemMultiplier - 1) / (gemMultiplier + 1);
     let maxWilling = breakEven * (0.75 + 0.45 * t.aggression); // 0.75..1.20
+    // LoanLover IDENTITY: this is your specialty. Always commit harder than the math says.
+    if (style === 'LoanLover') maxWilling *= 1.45;
 
     // Stacking: existing debt costs cash flow at endgame (we have to NOT spend it)
     // but each new loan still adds NET cash now. Penalty is mild for smart bots.
