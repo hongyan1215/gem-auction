@@ -306,11 +306,13 @@ function botPickBid(p, game) {
 
   // Block opponents close to missions (signalAware) — DENIAL PLAY
   // Cap denial uplift so we don't burn cash chasing every block.
+  // ANTI-HUMAN: humans get DOUBLE denial weight (the table colludes against the threat).
   let blockBonus = 0;
   if (t.signalAware > 0.4) {
     let totalDenial = 0;
     for (const opp of game.players) {
       if (opp.id === p.id) continue;
+      const humanMult = opp.isBot ? 1.0 : 2.0;
       for (const m of game.missions) {
         if (m.completedBy) continue;
         if (meets(m, opp.wonGems)) continue;
@@ -322,7 +324,7 @@ function botPickBid(p, game) {
           if (m.type === 'TWO_SPECIFIC' || m.type === 'THREE_SPECIFIC') {
             const missing = m.gems.filter(g => !oppCounts[g]);
             if (missing.length === 1 && lot.includes(missing[0])) {
-              totalDenial += m.score * 0.20 * t.signalAware; // small nudge
+              totalDenial += m.score * 0.20 * t.signalAware * humanMult;
             }
           }
           continue;
@@ -331,12 +333,12 @@ function botPickBid(p, game) {
         // Urgency lower if opp has low cash (they might not afford this lot anyway).
         const oppCash = opp.money;
         const urgency = Math.min(1.0, oppCash / Math.max(1, lotValue + 2));
-        const denialValue = m.score * urgency * 0.55 * t.signalAware;
+        const denialValue = m.score * urgency * 0.55 * t.signalAware * humanMult;
         totalDenial += denialValue;
       }
     }
-    // CAP: denial bonus can't exceed 6 (≈half of largest mission). Stops cash burn.
-    blockBonus = Math.min(6, totalDenial);
+    // CAP: denial bonus can't exceed 8 (a hair more for human-anchored denial).
+    blockBonus = Math.min(8, totalDenial);
   }
 
   // Diversity (have many of one type already, less marginal value)
@@ -380,6 +382,31 @@ function botPickBid(p, game) {
 
   let base = lotValue * earlyDiscount + missionBonus + blockBonus + diversityBonus + oneAwayBonus - leakPenalty;
   base *= endgameUrgency * cashBurnMult;
+
+  // ANTI-HUMAN GANG-UP: every bot tracks the strongest human at the table.
+  // If a human is leading (by visible score+money) and could plausibly win this lot,
+  // add a small uplift so bots collectively raise the price on them.
+  // Effect is gentle (max ~12% bid increase) and gated by intelligence × signalAware
+  // so dumb bots still play naturally.
+  let humanThreatMult = 1.0;
+  if (t.intelligence > 0.4 && t.signalAware > 0.3) {
+    let topHumanPower = -Infinity;
+    let myPower = p.money + (p.score || 0) + counts(p.wonGems) ? p.wonGems.length * 4 : 0;
+    myPower = p.money + (p.score || 0) + p.wonGems.length * 4;
+    for (const opp of game.players) {
+      if (opp.id === p.id || opp.isBot) continue;
+      const power = opp.money + (opp.score || 0) + opp.wonGems.length * 4;
+      if (power > topHumanPower) topHumanPower = power;
+    }
+    if (topHumanPower > -Infinity) {
+      // How much the human leads me by (normalised to ~20)
+      const lead = (topHumanPower - myPower) / 20;
+      // Lead range maps to 0..0.12 multiplier uplift
+      const uplift = Math.max(0, Math.min(0.12, 0.06 + lead * 0.08)) * t.intelligence;
+      humanThreatMult = 1 + uplift;
+    }
+  }
+  base *= humanThreatMult;
   base = Math.max(0, base);
 
   // Opponent bid modeling
