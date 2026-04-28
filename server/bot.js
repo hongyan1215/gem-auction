@@ -92,6 +92,46 @@ function botPickBid(p, game) {
   const myEstUnused = {};
   for (const tt of GEM_TYPES) myEstUnused[tt] = (visibleUnused[tt] || 0) + (ownHiddenCounts[tt] || 0);
 
+  // *** BAYESIAN INFERENCE for smart bots (intelligence >= 0.75) ***
+  // Each gem type has 6 total. We can see: own hand (hidden+wonGems) + everyone's
+  // wonGems + everyone's revealedGems + market + (auctionPool - market). Unknown =
+  // other players' hiddenGems + remaining auctionPool (unrevealed).
+  // For each type, expected unused-pool-count = visible-unused + (unknown_of_type * (hiddenPoolRemaining / unknownTotal))
+  if (String(style || '').toLowerCase() !== 'wildcard' && t.intelligence >= 0.75) {
+    const seen = {}; // counts we directly see
+    for (const tt of GEM_TYPES) seen[tt] = 0;
+    for (const pl of game.players) {
+      for (const g of pl.wonGems) seen[g]++;
+      for (const g of pl.revealedGems) seen[g]++;
+    }
+    for (const g of (game.market || [])) seen[g]++;
+    // Add own hidden (we see it)
+    for (const g of p.hiddenGems) seen[g]++;
+    let totalUnknown = 0;
+    const unknownByType = {};
+    for (const tt of GEM_TYPES) {
+      unknownByType[tt] = Math.max(0, 6 - seen[tt]);
+      totalUnknown += unknownByType[tt];
+    }
+    // Hidden pool remaining = (5 players - 1 me) * 3 hidden each minus already-revealed
+    let othersHiddenRemaining = 0;
+    for (const pl of game.players) {
+      if (pl.id === p.id) continue;
+      othersHiddenRemaining += pl.hiddenGems.length;
+    }
+    if (totalUnknown > 0) {
+      const hiddenShare = othersHiddenRemaining / totalUnknown; // fraction of unknown that's in opp hidden = unused
+      for (const tt of GEM_TYPES) {
+        // expected unused = visible-in-unused-pool (own hidden + revealed) + expected opp hidden of this type
+        const visibleInUnused = (ownHiddenCounts[tt] || 0);
+        let revealedOfType = 0;
+        for (const pl of game.players) for (const g of pl.revealedGems) if (g === tt) revealedOfType++;
+        const expOppHidden = unknownByType[tt] * hiddenShare;
+        myEstUnused[tt] = visibleInUnused + revealedOfType + expOppHidden;
+      }
+    }
+  }
+
   // *** WILDCARD CHEAT: omniscient — sees every player's hidden gems for perfect V(n) ***
   if (String(style || '').toLowerCase() === 'wildcard') {
     for (const tt of GEM_TYPES) myEstUnused[tt] = 0;
