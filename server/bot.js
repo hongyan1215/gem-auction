@@ -636,7 +636,7 @@ function botPickBid(p, game) {
     case 'hoarder':
       // CHEAT: knows exact remaining gem-auction count → ultra-precise pacing
       // Hoard early, then unload aggressively. Esp value gem stacks for V(n).
-      personalityMult = (progress < 0.4 ? 0.78 : 1.18) + r() * 0.15;
+      personalityMult = (progress < 0.4 ? 0.62 : 1.18) + r() * 0.15;
       if (progress >= 0.4) base *= 1.10;
       // Late-game: if few gem auctions left and we're cash-heavy, weaponize
       if (cheats.futureGemAuctions <= 4 && p.money >= 10 && lotValue >= 6) {
