@@ -344,28 +344,27 @@ function botPickBid(p, game) {
       if (trueValue < 1) return 0;
     } else if (card.kind === 'LOAN') {
       // Loan: get (value - bid) cash now, lose value at end. Net score = -bid.
-      // God uses Loan strategically: if she's cash-starved AND a known jackpot
-      // is coming up in the remaining deck, the cash translates to score.
+      // The cash is leveraged: each $1 in hand can buy gems worth ~1.7$ profit.
+      // So loan is +EV when bid < face*r/(1+r) where r = future ROI per $.
       const lotsLeft = ((game.auctionPool && game.auctionPool.length) || 0);
-      // Look ahead: count upcoming jackpot lots (V≥4 per gem × 2-gem lot, or solo gem with stacked V)
-      let upcomingJackpots = 0;
-      const remainingDeck = (game.deck && Array.isArray(game.deck)) ? game.deck : [];
-      // Estimate remaining gems in pool: any gem whose myEstUnused ≥ 3 (V≥12) is "high value"
-      const highValueGems = GEM_TYPES.filter(g => (myEstUnused[g] || 0) >= 3);
-      // Auction cards remaining that bring high-V gems out
-      for (const c of remainingDeck) {
-        if (c.kind === 'AUCTION_GEM' || c.kind === 'AUCTION_2GEMS') upcomingJackpots++;
+      // Estimate avg future ROI from remaining auction pool
+      let poolValSum = 0, poolCount = 0;
+      for (const g of (game.auctionPool || [])) {
+        poolValSum += valueForCount(myEstUnused[g] || 0);
+        poolCount++;
       }
-      // Heuristic: if money < 8 AND ≥3 auction lots left AND high-V gems exist → borrow cheap
-      if (p.money < 8 && lotsLeft >= 3 && highValueGems.length > 0 && upcomingJackpots >= 3) {
-        if (card.value <= 10) trueValue = 1;
-        else if (p.money < 4 && upcomingJackpots >= 4) trueValue = 1;
-        else return 0;
-      } else if (p.money >= 8 || lotsLeft < 3) {
-        return 0;
-      } else {
-        trueValue = 1;
-      }
+      if (lotsLeft < 2 || poolCount === 0) return 0;
+      const avgFutureV = poolValSum / poolCount;
+      const avgFutureBid = Math.max(1, avgFutureV * 0.55);
+      const futureROI = (avgFutureV - avgFutureBid) / avgFutureBid; // e.g. 0.7
+      // Max +EV bid: face*r/(1+r), then keep margin
+      const maxBid = Math.floor((card.value * futureROI) / (1 + futureROI) * 1.0);
+      // Stronger when cash-starved
+      const cashBoost = p.money < 8 ? 1.5 : p.money < 14 ? 1.2 : 1.0;
+      trueValue = Math.max(1, Math.floor(maxBid * cashBoost));
+      if (process.env.DEBUG_GOD_LOAN) console.log(`[GodLoan] face=${card.value} ROI=${futureROI.toFixed(2)} maxBid=${maxBid} cashBoost=${cashBoost} trueValue=${trueValue} money=${p.money}`);
+      // Skip if trueValue would force a bid > affordable cash buffer
+      if (trueValue >= p.money - 1) return 0;
     } else {
       trueValue = card.value || 0;
     }
@@ -462,7 +461,9 @@ function botPickBid(p, game) {
         const futureROI = (avgFutureV - avgFutureBid) / avgFutureBid; // profit per $
         const thisROI = (trueValue - bid) / bid;
         // Require this lot's ROI to beat future avg ROI by 10% margin
-        if (thisROI < futureROI * 1.10 && trueValue < 15) {
+        // Bypass ROI gate if this lot is BIG (>=15) OR helps a mission I'm close to
+        const helpsMyMission = cheatMission >= 5;
+        if (thisROI < futureROI * 1.10 && trueValue < 12 && !helpsMyMission) {
           // Not worth it — pass or undercut
           return 0;
         }
