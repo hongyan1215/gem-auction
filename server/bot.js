@@ -135,17 +135,20 @@ function botPickBid(p, game) {
     const baseMult = 1.0 + 0.6 * earlyGameBoost + 0.4 * cashDeficit;
     const intelMult = 0.5 + 0.7 * t.intelligence; // 0.5..1.2
     let gemMultiplier = baseMult * intelMult * (0.85 + 0.30 * t.loanLover);
-    // *** LIQUIDITY DISCIPLINE: borrowing is +EV ONLY if (a) you actually need cash and
-    // (b) you have a clear deployment target. If neither holds, skip. ***
-    // Skip-if-no-deficit: rich bots shouldn't borrow at all (face penalty pure loss).
+    // *** LIQUIDITY DISCIPLINE (softened): borrowing without cash pressure is weaker EV,
+    //     but $10 loans early game are still a steal (face -10 split into 30 future bid-$).
+    //     Don't fully skip — just discount. ***
     if (cashDeficit < 0.15 && p.money >= 10) {
-      // No cash pressure → only LoanLover identity touches loans, and even then mildly.
-      if (style !== 'LoanLover') return 0;
-      gemMultiplier *= 0.6;
+      // No cash pressure → soft discount, not a hard skip.
+      // LoanLover identity ignores it; others mild discount for liquidity option value.
+      if (style !== 'LoanLover') gemMultiplier *= 0.80;
     }
-    // Cap multiplier in early game: prior intel had it hitting 2.0+, which justified
-    // wild bids on the first $10 loan that turned into score-bleed.
-    const earlyCapMult = lotsLeft >= 10 ? 1.30 : (lotsLeft >= 6 ? 1.55 : 1.85);
+    // BIG-LOAN BONUS: $20 loans inject more cash → higher leverage value. Without
+    // this, math underprices them and nobody bids → human freebie.
+    if (card.value >= 20) gemMultiplier *= 1.15;
+    // Cap multiplier in early game: was 1.30 (too tight, killed $20 loan bids).
+    // Raised so bots actually compete on Loans without being reckless.
+    const earlyCapMult = lotsLeft >= 10 ? 1.65 : (lotsLeft >= 6 ? 1.80 : 2.00);
     if (gemMultiplier > earlyCapMult) gemMultiplier = earlyCapMult;
 
     // Max willing bid: such that (received_cash * mult) > bid + (face_penalty - face_already_paid)
@@ -157,7 +160,7 @@ function botPickBid(p, game) {
     const breakEven = card.value * Math.max(0, gemMultiplier - 1) / (gemMultiplier + 1);
     let maxWilling = breakEven * (0.75 + 0.45 * t.aggression); // 0.75..1.20
     // LoanLover IDENTITY: this is your specialty. Always commit harder than the math says.
-    if (style === 'LoanLover') maxWilling *= 1.45;
+    if (style === 'LoanLover') maxWilling *= 1.55;
 
     // Stacking: existing debt costs cash flow at endgame (we have to NOT spend it)
     // but each new loan still adds NET cash now. Penalty is mild for smart bots.
