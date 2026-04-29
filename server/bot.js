@@ -332,7 +332,8 @@ function botPickBid(p, game) {
     }
     let trueValue;
     if (card.kind === 'AUCTION_GEM') {
-      trueValue = lotValue + cheatMission + cheatMissionProgress;
+      // Boost partial mission progress 0.40 → 0.65 (God was losing 7.2 score/loss to missions)
+      trueValue = lotValue + cheatMission + cheatMissionProgress * 1.625;
     } else if (card.kind === 'INVEST') {
       // Invest: lock X cash, get +bonus at endgame.
       // Opportunity cost: locked X could have bought ~0.60×X worth of gem score.
@@ -385,7 +386,23 @@ function botPickBid(p, game) {
         for (const m of game.missions) {
           if (m.completedBy) continue;
           if (meets(m, opp.wonGems)) continue;
-          if (meets(m, opp.wonGems.concat(lot))) oppMission += m.score;
+          if (meets(m, opp.wonGems.concat(lot))) {
+            oppMission += m.score;
+          } else {
+            // Partial: opp gets closer to mission with this lot
+            const oppFuture = opp.wonGems.concat(lot);
+            if (m.type === 'TWO_SPECIFIC' || m.type === 'THREE_SPECIFIC') {
+              const haveBefore = m.gems.filter(g => opp.wonGems.includes(g)).length;
+              const haveAfter = m.gems.filter(g => oppFuture.includes(g)).length;
+              if (haveAfter > haveBefore) oppMission += m.score * 0.30 * ((haveAfter-haveBefore)/m.gems.length);
+            } else if (m.type === 'THREE_SAME') {
+              const cb = counts(opp.wonGems);
+              const ca = counts(oppFuture);
+              for (const g of GEM_TYPES) {
+                if ((cb[g]||0) < 3 && (ca[g]||0) > (cb[g]||0)) oppMission += m.score * 0.30 * ((ca[g]||0)/3);
+              }
+            }
+          }
         }
         const oppTotal = oppGemVal + oppMission;
         if (oppTotal > maxOppGain) maxOppGain = oppTotal;
