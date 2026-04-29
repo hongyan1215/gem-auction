@@ -374,11 +374,27 @@ function botPickBid(p, game) {
 
     // Read actual submitted bids (God peeks last). game.bids is a Map.
     let oppMax = 0;
+    let oppMaxSeats = []; // seats of all opponents tied at oppMax
     if (game.bids && typeof game.bids.entries === 'function') {
       for (const [pid, bidVal] of game.bids.entries()) {
-        if (pid !== p.id && typeof bidVal === 'number' && bidVal > oppMax) oppMax = bidVal;
+        if (pid === p.id || typeof bidVal !== 'number') continue;
+        if (bidVal > oppMax) { oppMax = bidVal; oppMaxSeats = []; }
+        if (bidVal === oppMax) {
+          const opp = game.players.find(pl => pl.id === pid);
+          if (opp && typeof opp.seat === 'number') oppMaxSeats.push(opp.seat);
+        }
       }
     }
+    // Tie-break check: if God ties at oppMax, does she win?
+    // Tie order = clockwise from lastWinnerSeat+1. Lower distance wins.
+    const PLAYERS_COUNT = game.players.length;
+    function tieDist(seat) {
+      if (game.lastWinnerSeat == null) return seat; // first round random; treat seat as fallback
+      return ((seat - game.lastWinnerSeat - 1 + PLAYERS_COUNT) % PLAYERS_COUNT);
+    }
+    const myDist = (typeof p.seat === 'number') ? tieDist(p.seat) : 999;
+    const oppBestDist = oppMaxSeats.length ? Math.min(...oppMaxSeats.map(tieDist)) : 999;
+    const winsTie = (game.lastWinnerSeat != null) && (myDist < oppBestDist);
     // Strict pace: hoard cash for jackpots
     const lotsLeftG = ((game.auctionPool && game.auctionPool.length) || 0);
     const isJackpot = trueValue >= 15 || cheatMission >= 10;
@@ -386,13 +402,11 @@ function botPickBid(p, game) {
     // Strict pace: hoard cash for jackpots
     let paceCap = isJackpot ? p.money : Math.floor(p.money * (lotsLeftG > 6 ? 0.30 : lotsLeftG > 3 ? 0.50 : 0.95));
 
-    // God strategy: outbid opponent's actual max by 1 if affordable & worthwhile.
-    // - If oppMax+1 ≤ trueValue: easy win, take it.
-    // - If oppMax+1 > trueValue but ≤ paceCap: still outbid (deny) up to paceCap.
-    let bid = oppMax + 1;
-    if (bid > paceCap) bid = Math.min(Math.floor(trueValue) + 1, paceCap); // can't afford spoiler, fall back
+    // God strategy: if tie-break favors her, just match oppMax. Else outbid by 1.
+    const needToBeat = winsTie ? oppMax : oppMax + 1;
+    let bid = Math.min(Math.floor(trueValue) + 1, needToBeat);
     bid = Math.max(1, bid);
-    bid = Math.min(bid, p.money);
+    bid = Math.min(bid, paceCap, p.money);
     return bid;
   }
 
