@@ -112,8 +112,9 @@ function botPickBid(p, game) {
     //   where gem_multiplier = E[score per $1 spent on remaining gem auctions]
 
     const debtAlready = (p.loans || []).reduce((a, l) => a + l.value, 0);
-    // Hard cap: each player can hit -50 max (2× $20 + 1× $10 = $50 total face).
-    if (debtAlready >= 50) return 0;
+    // Hard cap: 30 (was 50). Two $10 + one $10 OR one $20 + one $10. Beyond
+    // this the face penalty crushes any leverage upside.
+    if (debtAlready >= 30) return 0;
 
     // ESTIMATE GEM-MULTIPLIER: how many gem-value points can $1 buy in remaining pool?
     // Naive baseline: avg gem V across types I'd target ÷ avg winning bid for those.
@@ -133,7 +134,19 @@ function botPickBid(p, game) {
     // Smart bots understand this; low intel doesn't.
     const baseMult = 1.0 + 0.6 * earlyGameBoost + 0.4 * cashDeficit;
     const intelMult = 0.5 + 0.7 * t.intelligence; // 0.5..1.2
-    const gemMultiplier = baseMult * intelMult * (0.85 + 0.30 * t.loanLover);
+    let gemMultiplier = baseMult * intelMult * (0.85 + 0.30 * t.loanLover);
+    // *** LIQUIDITY DISCIPLINE: borrowing is +EV ONLY if (a) you actually need cash and
+    // (b) you have a clear deployment target. If neither holds, skip. ***
+    // Skip-if-no-deficit: rich bots shouldn't borrow at all (face penalty pure loss).
+    if (cashDeficit < 0.15 && p.money >= 10) {
+      // No cash pressure → only LoanLover identity touches loans, and even then mildly.
+      if (style !== 'LoanLover') return 0;
+      gemMultiplier *= 0.6;
+    }
+    // Cap multiplier in early game: prior intel had it hitting 2.0+, which justified
+    // wild bids on the first $10 loan that turned into score-bleed.
+    const earlyCapMult = lotsLeft >= 10 ? 1.30 : (lotsLeft >= 6 ? 1.55 : 1.85);
+    if (gemMultiplier > earlyCapMult) gemMultiplier = earlyCapMult;
 
     // Max willing bid: such that (received_cash * mult) > bid + (face_penalty - face_already_paid)
     //   The face value (-card.value) is unavoidable if we win. So:
@@ -186,6 +199,19 @@ function botPickBid(p, game) {
     maxWilling *= lookaheadDiscount;
     // CHEAT (Banker): last invest in deck → press
     if (style === 'Banker' && cheats.deckCounts.INVEST === 0) maxWilling *= 1.15;
+
+    // *** LIQUIDITY-AWARE CEILING: locking cash in invest means you can't bid gems
+    // for the next several lots. Early game with many lots ahead, this is a big
+    // opportunity cost. Cap the bid below the +EV ceiling when liquidity is precious. ***
+    const lotsLeftI = (game.auctionPool || []).length + (game.market || []).length;
+    if (style === 'Banker' && lotsLeftI >= 10) {
+      // Very early: cap $5 at value-2 (=$3), $10 at value-3 (=$7).
+      // Still profitable, but preserves cash for early gem grabs.
+      const earlyCap = card.value - (card.value >= 10 ? 3 : 2);
+      maxWilling = Math.min(maxWilling, earlyCap);
+    }
+    // Mid+late: no extra cap beyond the natural value-1 ceiling — Banker wants invests.
+
     // Aggression nudge (don't multiply twice — keep it modest)
     let bid = Math.floor(maxWilling * (0.85 + 0.25 * t.aggression) * (0.85 + r() * 0.25));
     // Hard ceiling: never bid value or above (would zero out the profit)
@@ -400,19 +426,23 @@ function botPickBid(p, game) {
     if (have >= 3) diversityBonus -= 1.5; // diminishing
   }
 
-  // *** STACK BONUS: 3-of-a-kind in wonGems caps mission/value pyramid (max V=20 per gem
-  //     × 3 = 60 + 10 mission). With 2-of-a-kind already, the third gem of that type is
-  //     worth substantially more than its marginal V — it converts the stack into a
-  //     mission-scoring engine. Smart bots see this. ***
+  // *** STACK BONUS: 3-of-a-kind only matters if a 3-OF-A-KIND mission exists this game.
+  //     Without that mission, the third gem of a type is worth only V(n) — no mission
+  //     pyramid bonus. Smart bots check the table before paying the stack premium. ***
+  const hasThreeOfKindMission = game.missions.some(m =>
+    m.type === 'THREE_OF_A_KIND' && !m.completedBy
+  );
   let stackBonus = 0;
   for (const g of lot) {
     const have = myWon[g] || 0;
     // own hidden of same type also counts toward V (they stay unused at endgame)
     const hiddenOfType = (ownHiddenCounts[g] || 0);
-    if (have === 2) stackBonus += 6 * t.intelligence; // completes pair → 3-of-a-kind setup
-    else if (have === 1 && hiddenOfType >= 1) stackBonus += 3 * t.intelligence; // hidden lock helps
-    // Hidden-lock bonus: each gem in our hidden of same type increases V because we keep
-    // them unused. Effectively this lot is worth more to us than to anyone else.
+    if (hasThreeOfKindMission) {
+      if (have === 2) stackBonus += 6 * t.intelligence; // completes pair → 3-of-a-kind setup
+      else if (have === 1 && hiddenOfType >= 1) stackBonus += 3 * t.intelligence;
+    }
+    // Hidden-lock bonus is independent of mission: each hidden of same type stays in
+    // unused pool, raising V at endgame. Always applies.
     if (hiddenOfType >= 1) stackBonus += 1.0 * hiddenOfType;
   }
 
@@ -609,19 +639,44 @@ function botPickBid(p, game) {
       break;
     case 'missionhunter':
       // CHEAT: peeks at opp hidden gems → knows if opp could complete a mission with this lot
-      // Boost if winning this lot blocks an opp who is mission-close
+      // *** EV-WEIGHTED: missionBonus is the COMPLETION jackpot, but the prob another
+      //     hunter/contender grabs it first matters. If a strong opp is also chasing
+      //     (close to mission, has cash), discount expected reward. ***
       let blockBoost = 0;
+      let contenderDiscount = 1.0;
       if (cheats.oppHiddenAll) {
         for (const m of game.missions) {
           if (m.completedBy) continue;
+          // Block check (using cheat hidden info)
           for (const opp of cheats.oppHiddenAll) {
             const oppPool = [...(game.players.find(x=>x.id===opp.id)?.wonGems||[])];
             if (meets(m, oppPool.concat(lot))) { blockBoost += m.score * 0.5; break; }
           }
+          // Contender check: another player visibly close to this mission with cash
+          // → my expected probability of grabbing future gems for it drops.
+          if (m.type === 'TWO_SPECIFIC' || m.type === 'THREE_SPECIFIC') {
+            for (const opp of game.players) {
+              if (opp.id === p.id) continue;
+              const oc = counts(opp.wonGems);
+              const have = m.gems.filter(g => oc[g]).length;
+              if (have >= m.gems.length - 1 && opp.money >= 5) {
+                contenderDiscount *= 0.7; break;
+              }
+            }
+          }
         }
       }
       base += blockBoost;
+      // Apply contender discount to the missionBonus portion (recompute base subtotal).
+      if (contenderDiscount < 1.0 && missionBonus > 0) {
+        base -= missionBonus * (1 - contenderDiscount);
+      }
       personalityMult = (missionBonus > 0 ? 1.15 : 0.85) + r() * 0.15;
+      // *** STOP-LOSS: cap bid at gemEV + missionBonus * 0.7 (don't pay full mission
+      //     value for a gem that hasn't completed yet — leave margin for the chance
+      //     someone else snipes the final gem). ***
+      // Apply this AFTER personalityMult below — done via a flag tracked here:
+      p._mhStopLoss = lotValue + missionBonus * 0.7 + diversityBonus + oneAwayBonus;
       break;
     case 'loanlover':
       // CHEAT: knows if a more profitable Loan card is coming → don't waste cash now
@@ -630,6 +685,13 @@ function botPickBid(p, game) {
   }
 
   let bid = Math.floor(base * personalityMult);
+
+  // MissionHunter stop-loss: never bid more than gemEV + 70% of missionBonus.
+  // Prevents over-paying when someone else is also positioned to grab the mission.
+  if (styleKey === 'missionhunter' && typeof p._mhStopLoss === 'number') {
+    if (bid > p._mhStopLoss) bid = Math.max(0, Math.floor(p._mhStopLoss));
+    delete p._mhStopLoss;
+  }
 
   // Opponent-aware sniping: bid just enough to win, not more
   if (predictedOppMax != null && t.intelligence >= 0.5 && styleKey !== 'newbie' && styleKey !== 'sniper') {
@@ -835,35 +897,43 @@ function botPickReveal(p, game) {
 
   let bestGem = uniqueCandidates[0];
   let bestScore = -Infinity;
-  for (const g of uniqueCandidates) {
-    // 1) "I have many copies in hidden" → safer to reveal one (information loss diluted)
-    const myCount = myHiddenCounts[g];
-    let score = myCount * 2.0;
+  // Count own wonGems by type — types we're stacking are PROTECTED (don't reveal them
+  // because that confirms our strategy AND lets opps deny our mission gem).
+  const myWonCounts = counts(p.wonGems);
 
-    // 2) Already very public → reveal adds little new info (good)
+  for (const g of uniqueCandidates) {
+    const myCount = myHiddenCounts[g];
+    let score = 0;
+
+    // 1) *** PREFER LONELY HIDDENS (single-copy types) — revealing one of two
+    //    same-type hiddens leaks "I have a stack" info to opponents; revealing
+    //    a singleton leaks far less. Strongly prefer myCount === 1. ***
+    if (myCount === 1) score += 4.0;
+    else if (myCount === 2) score -= 2.0;
+    else if (myCount >= 3) score -= 5.0;  // never reveal a 3-stack hidden
+
+    // 2) *** PROTECT MISSION/STACK GEMS: if I already have wonGems of this type,
+    //    revealing my hidden of same type tells opps "MissionHunter target lock" —
+    //    they'll deny or overbid future lots of this gem. Strongly avoid. ***
+    const wonOfType = myWonCounts[g] || 0;
+    if (wonOfType >= 2) score -= 4.0;
+    else if (wonOfType === 1) score -= 1.5;
+
+    // 3) Already very public → reveal adds little new info (good)
     score += publicCounts[g] * 1.5;
 
-    // 3) My OWN final-V damage if this type's true count is HIGH already → revealing
-    //    1 more barely changes V (it caps at 20 anyway). Prefer types where unused>=4.
+    // 4) My OWN final-V damage if this type's true count is HIGH already → revealing
+    //    1 more barely changes V (it caps at 20 anyway).
     if (trueUnused[g] >= 4) score += 2.0;
 
-    // 4) CHEATER MISDIRECTION: reveal a gem whose true V is LOW but opps think it's HIGH.
-    //    Why? Opps will dump cash on lots they THINK are valuable; revealing this lowers
-    //    their estimate (they see one more in unused), making them bid LESS — but the gem
-    //    was already low value to me anyway. So I lose nothing and they bid less.
-    //    Reverse: if true V is HIGH and opps don't know yet, hiding (not revealing) is best.
+    // 5) CHEATER MISDIRECTION: reveal a gem whose true V is LOW but opps think it's HIGH.
     if (isCheater) {
       const trueV = Math.min(20, 4 * trueUnused[g]);
-      // Opps' visible-only count
       const oppVisible = publicCounts[g];
-      const oppEstUnused = oppVisible + 2; // rough: assume 2 hidden of this type on avg
+      const oppEstUnused = oppVisible + 2;
       const oppEstV = Math.min(20, 4 * oppEstUnused);
-      // Misdirection: reveal types where (trueV is low) AND (oppEst is similar/higher)
-      // → revealing makes opp realise they're cheap; they bid less; ok for me since trueV low.
-      // Conversely AVOID revealing types where trueV is HIGH but oppEst is LOW (we'd give away the secret).
       const misdirectGain = (oppEstV - trueV) * 0.4;
       score += misdirectGain;
-      // STRONG penalty: never reveal a high-true-V type that opps underestimate
       if (trueV >= 12 && oppEstV <= trueV - 4) score -= 6.0;
     }
 
