@@ -523,12 +523,16 @@ function botPickBid(p, game) {
       } catch {}
       if (peekMax >= 0 && p.money >= 1) {
         const target = peekMax + 1;
-        // Reasonable = target ≤ EV (with tiny ±0.5 noise so we don't always +1 on the dot)
-        const noise = (r() - 0.5);  // -0.5..+0.5
-        if (target <= p.money && target <= expectedValue + noise) {
+        // Larger noise (was 0.5) — Sniper isn't omniscient, sometimes misjudges EV
+        const noise = (r() - 0.5) * 3.0;  // -1.5..+1.5
+        // Require 5% profit margin (target ≤ EV*0.95) — don't snipe break-even lots
+        // when others bid sensibly; the +1 doesn't compensate for variance.
+        const profitFloor = expectedValue * 0.95 + noise;
+        // 8% random skip — even cheaters get distracted / mis-click
+        if (r() < 0.08) return 0;
+        if (target <= p.money && target <= profitFloor) {
           return Math.max(1, target);
         }
-        // Unreasonable: don't chase. Pass.
         return 0;
       }
       // No peek data (shouldn't happen at Sniper's turn) → conservative pass
@@ -609,15 +613,25 @@ function botPickBid(p, game) {
       personalityMult = 0.80 + r() * 0.30; // 0.80–1.10
       base *= 0.92 + r() * 0.18;            // mild valuation noise
       break;
-    case 'aggressor':
+    case 'aggressor': {
       // CHEAT: knows future gem auction count → all-in when this is one of the last big lots
+      // *** SMARTER: aggressor still pushes hard, but respects EV ceiling and predictedOppMax
+      //     to avoid getting sniped on overbids. ***
+      const aggEV = lotValue + missionBonus + oneAwayBonus + diversityBonus;
       if (cheats.futureGemAuctions <= 3 && lotValue >= 6) {
-        // This may be the last gem chance; bid hard
-        personalityMult = (1.20 + r() * 0.15);
-        base *= 1.15;
-      } else if (p.money < 8 && base < 14) personalityMult = 0.55 + r() * 0.2;
-      else personalityMult = t.aggression * (0.98 + r() * 0.12);
+        // Last gem chance — push hard but keep some sanity
+        personalityMult = (1.15 + r() * 0.12);
+        base *= 1.10;
+      } else if (p.money < 8 && base < 14) {
+        personalityMult = 0.55 + r() * 0.2;
+      } else {
+        personalityMult = t.aggression * (0.98 + r() * 0.12);
+      }
+      // *** STOP-LOSS: never bid more than EV * 1.10 — Aggressor pays SOME premium
+      //     for tempo/identity, but not 50%+ overbids that drain his cash. ***
+      p._aggStopLoss = Math.max(1, Math.floor(aggEV * 1.10));
       break;
+    }
     case 'hoarder':
       // CHEAT: knows exact remaining gem-auction count → ultra-precise pacing
       // Hoard early, then unload aggressively. Esp value gem stacks for V(n).
@@ -691,6 +705,11 @@ function botPickBid(p, game) {
   if (styleKey === 'missionhunter' && typeof p._mhStopLoss === 'number') {
     if (bid > p._mhStopLoss) bid = Math.max(0, Math.floor(p._mhStopLoss));
     delete p._mhStopLoss;
+  }
+  // Aggressor stop-loss: cap at EV*1.10. Identity preserved (10% premium for tempo).
+  if (styleKey === 'aggressor' && typeof p._aggStopLoss === 'number') {
+    if (bid > p._aggStopLoss) bid = Math.max(0, Math.floor(p._aggStopLoss));
+    delete p._aggStopLoss;
   }
 
   // Opponent-aware sniping: bid just enough to win, not more
