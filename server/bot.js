@@ -642,6 +642,14 @@ function botPickBid(p, game) {
       if (cheats.futureGemAuctions <= 4 && p.money >= 10 && lotValue >= 6) {
         base *= 1.25; personalityMult *= 1.10;
       }
+      // *** IDENTITY CASH CONSERVATION ***
+      // Hoarder = patient. Never blow >50% of cash on a single early lot, or
+      // >70% in mid-game. The whole point of the archetype is *not* spiking.
+      // (Late-game weaponize phase is exempt — that's the unload.)
+      if (progress < 0.7) {
+        const cashCap = Math.floor(p.money * (progress < 0.35 ? 0.50 : 0.70));
+        p._hoarderCashCap = cashCap;
+      }
       break;
     case 'banker':
       // CHEAT: knows next Invest face value → bids accordingly on current INVEST cards
@@ -711,6 +719,12 @@ function botPickBid(p, game) {
   if (styleKey === 'aggressor' && typeof p._aggStopLoss === 'number') {
     if (bid > p._aggStopLoss) bid = Math.max(0, Math.floor(p._aggStopLoss));
     delete p._aggStopLoss;
+  }
+  // Hoarder cash conservation: identity-driven cap at 50%/70% of cash in
+  // early/mid game. Stops the "spent $19 of $20 on first lot" behavior.
+  if (styleKey === 'hoarder' && typeof p._hoarderCashCap === 'number') {
+    if (bid > p._hoarderCashCap) bid = Math.max(0, p._hoarderCashCap);
+    delete p._hoarderCashCap;
   }
 
   // *** GLOBAL EARLY-GAME BRAKE: in the first 5 lots (lotsLeft >= 11),
