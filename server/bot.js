@@ -402,8 +402,9 @@ function botPickBid(p, game) {
         const oppTotal = oppGemVal + oppMission;
         if (oppTotal > maxOppGain) maxOppGain = oppTotal;
       }
-      // Spoiler 1.0×: God denies opponent's full gain (she peeks last, always wins)
-      trueValue = Math.max(trueValue, maxOppGain);
+      // Spoiler DISABLED — God bids on her own value only.
+      // Tested: spoiler 1.0× (49.0%), conditional spoiler (49.0%), no spoiler (51.1%),
+      // mission-denial 0.5× (50.9%), mission-denial 1.0× (46.7%). No-spoiler wins.
     }
     if (trueValue < 0.5) return 0;
 
@@ -442,6 +443,31 @@ function botPickBid(p, game) {
     let bid = Math.min(Math.floor(trueValue) + 1, needToBeat);
     bid = Math.max(1, bid);
     bid = Math.min(bid, paceCap, p.money);
+
+    // Opportunity cost check: every $1 spent is $1 less for future lots.
+    // Estimate future profit/$ from remaining pool. Only proceed if this lot
+    // beats that ROI hurdle.
+    if (bid >= 2 && lotsLeftG >= 3 && card.kind === 'AUCTION_GEM') {
+      // Compute avg expected V of remaining pool gems
+      let poolValSum = 0;
+      let poolCount = 0;
+      for (const g of (game.auctionPool || [])) {
+        poolValSum += valueForCount(myEstUnused[g] || 0);
+        poolCount++;
+      }
+      if (poolCount > 0 && p.money > bid) {
+        const avgFutureV = poolValSum / poolCount;
+        // Rough: avg winning bid ≈ 0.55 * avgFutureV (5-player split, hoarding)
+        const avgFutureBid = Math.max(1, avgFutureV * 0.55);
+        const futureROI = (avgFutureV - avgFutureBid) / avgFutureBid; // profit per $
+        const thisROI = (trueValue - bid) / bid;
+        // Require this lot's ROI to beat future avg ROI by 10% margin
+        if (thisROI < futureROI * 1.10 && trueValue < 15) {
+          // Not worth it — pass or undercut
+          return 0;
+        }
+      }
+    }
     return bid;
   }
 
