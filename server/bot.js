@@ -192,12 +192,17 @@ function botPickBid(p, game) {
       lookaheadDiscount = 0.65;
     }
     const valueToMe = card.value;
-    // Real ceiling: value-1 ($4 for $5 invest, $9 for $10). Anything below is profit.
-    let maxWilling = Math.max(0, valueToMe - 1);
+    // Real ceiling accounting for OPPORTUNITY COST: locking $X for the game
+    // costs ~0.55*X in lost gem-buying score (clearing price ~0.55-0.70 V).
+    // Net profit = bonus - 0.55*bid. Profitable up to bid = bonus/0.55 ≈ 1.8*bonus,
+    // BUT cap at value-1 (cash refund still applies). Use shaded ceiling.
+    // $5 invest → ceiling $3 (net +5 - 0.55*3 = +3.4)
+    // $10 invest → ceiling $7 (net +10 - 0.55*7 = +6.2)
+    let maxWilling = Math.max(0, Math.floor(valueToMe * 0.65) - 1);
     maxWilling *= 0.85 + 0.30 * t.investLover; // 0.85 .. 1.15
-    // Banker IDENTITY: this is your specialty — push close to ceiling. Big invests get extra love.
+    // Banker IDENTITY: specialty in invests — push closer to ceiling but not past it.
     if (style === 'Banker') {
-      maxWilling *= (card.value >= 10 ? 1.45 : 1.30);
+      maxWilling *= (card.value >= 10 ? 1.20 : 1.15);
     }
     maxWilling *= lookaheadDiscount;
     // CHEAT (Banker): last invest in deck → press
@@ -606,7 +611,7 @@ function botPickBid(p, game) {
           return Math.min(p.money, Math.max(1, Math.ceil(topPred + 1)));
         }
       }
-      personalityMult = 0.95 + r() * 0.15; // 0.95–1.10 fallback
+      personalityMult = 0.95 + r() * 0.10; // 0.95-1.05 fallback (was 0.95-1.10)
       break;
     }
     case 'newbie':
@@ -616,48 +621,44 @@ function botPickBid(p, game) {
       break;
     case 'aggressor': {
       // CHEAT: knows future gem auction count → all-in when this is one of the last big lots
-      // *** SMARTER: aggressor still pushes hard, but respects EV ceiling and predictedOppMax
-      //     to avoid getting sniped on overbids. ***
+      // *** GEM mult LOGIC: cash $100 chases ~$180 score → market-clearing bid ≈ 0.65-0.80 × V.
+      //     Mult > 1.0 means structural loss. Aggressor identity = high-end of shading
+      //     range (0.85-0.95), not premium overpay. ***
       const aggEV = lotValue + missionBonus + oneAwayBonus + diversityBonus;
       if (cheats.futureGemAuctions <= 3 && lotValue >= 6) {
-        // Last gem chance — push hard but keep some sanity
-        personalityMult = (1.15 + r() * 0.12);
-        base *= 1.10;
+        // Last gem chance — push to ceiling but still no overpay
+        personalityMult = (0.95 + r() * 0.08); // 0.95-1.03
       } else if (p.money < 8 && base < 14) {
-        personalityMult = 0.55 + r() * 0.2;
+        personalityMult = 0.50 + r() * 0.15;   // cash-poor, hold back
       } else {
-        personalityMult = t.aggression * (0.98 + r() * 0.12);
+        // Identity flavor via aggression trait, but capped <= 1.0
+        personalityMult = Math.min(1.0, t.aggression * (0.78 + r() * 0.10));
       }
-      // *** STOP-LOSS: never bid more than EV * 1.10 — Aggressor pays SOME premium
-      //     for tempo/identity, but not 50%+ overbids that drain his cash. ***
-      p._aggStopLoss = Math.max(1, Math.floor(aggEV * 1.10));
+      // Stop-loss already at EV*1.10 — kept for safety but mult won't reach it now.
+      p._aggStopLoss = Math.max(1, Math.floor(aggEV * 1.05));
       break;
     }
     case 'hoarder':
       // CHEAT: knows exact remaining gem-auction count → ultra-precise pacing
-      // Hoard early, then unload aggressively. Esp value gem stacks for V(n).
-      personalityMult = (progress < 0.4 ? 0.62 : 1.18) + r() * 0.15;
-      if (progress >= 0.4) base *= 1.10;
-      // Late-game: if few gem auctions left and we're cash-heavy, weaponize
+      // *** Patient hoarder: shades hard early, only competitive late. ***
+      personalityMult = (progress < 0.4 ? 0.55 : 0.92) + r() * 0.10;
+      if (progress >= 0.4) base *= 1.05;
+      // Late-game weaponize: only when truly few lots left and stack-building.
       if (cheats.futureGemAuctions <= 4 && p.money >= 10 && lotValue >= 6) {
-        base *= 1.25; personalityMult *= 1.10;
+        base *= 1.15; personalityMult *= 1.05; // still bounded under EV*1.05
       }
-      // *** IDENTITY CASH CONSERVATION ***
-      // Hoarder = patient. Never blow >50% of cash on a single early lot, or
-      // >70% in mid-game. The whole point of the archetype is *not* spiking.
-      // (Late-game weaponize phase is exempt — that's the unload.)
+      // Cash conservation cap (unchanged — still important).
       if (progress < 0.7) {
         const cashCap = Math.floor(p.money * (progress < 0.35 ? 0.50 : 0.70));
         p._hoarderCashCap = cashCap;
       }
       break;
     case 'banker':
-      // CHEAT: knows next Invest face value → bids accordingly on current INVEST cards
-      // (handled in INVEST branch above ideally; here we boost gem bids when no good Invest coming)
-      personalityMult = 0.95 + r() * 0.15;
-      // If no more high-value Invest cards remain, banker shifts focus to gems
+      // *** Mult shaded: cash $100 vs $180 score = 0.55x clearing.
+      //     Banker = patient analyst, mid-shading 0.80-0.95. ***
+      personalityMult = 0.80 + r() * 0.15;
       if (cheats.deckCounts && cheats.deckCounts.INVEST <= 1 && lotValue >= 5) {
-        base *= 1.12;
+        base *= 1.08; // shift focus to gems when no more good Invest coming
       }
       break;
     case 'missionhunter':
@@ -694,7 +695,7 @@ function botPickBid(p, game) {
       if (contenderDiscount < 1.0 && missionBonus > 0) {
         base -= missionBonus * (1 - contenderDiscount);
       }
-      personalityMult = (missionBonus > 0 ? 1.15 : 0.85) + r() * 0.15;
+      personalityMult = (missionBonus > 0 ? 0.95 : 0.70) + r() * 0.10;
       // *** STOP-LOSS: cap bid at gemEV + missionBonus * 0.7 (don't pay full mission
       //     value for a gem that hasn't completed yet — leave margin for the chance
       //     someone else snipes the final gem). ***
@@ -703,7 +704,8 @@ function botPickBid(p, game) {
       break;
     case 'loanlover':
       // CHEAT: knows if a more profitable Loan card is coming → don't waste cash now
-      personalityMult = 1.0 + r() * 0.10;
+      // GEM bid: shaded like everyone else. LoanLover identity is on Loans, not gems.
+      personalityMult = 0.78 + r() * 0.10; // 0.78-0.88
       break;
   }
 
