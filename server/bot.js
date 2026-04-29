@@ -35,8 +35,8 @@ function randomBotName() { return BOT_NAMES[Math.floor(Math.random() * BOT_NAMES
 
 function makeBotProfile(excludeStyles = null) {
   const exclude = excludeStyles instanceof Set ? excludeStyles : new Set(excludeStyles || []);
-  // God is internal-test only — never spawned in real games
-  const publicPool = STYLE_KEYS.filter(s => s !== 'God');
+  // God enabled in prod (per user request) — cheats: peeks true values + opp bids
+  const publicPool = STYLE_KEYS.slice();
   const pool = publicPool.filter(s => !exclude.has(s));
   const candidates = pool.length > 0 ? pool : publicPool; // fallback if all used
   const style = candidates[Math.floor(Math.random() * candidates.length)];
