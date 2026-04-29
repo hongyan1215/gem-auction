@@ -204,9 +204,8 @@ function botPickBid(p, game) {
     // for the next several lots. Early game with many lots ahead, this is a big
     // opportunity cost. Cap the bid below the +EV ceiling when liquidity is precious. ***
     const lotsLeftI = (game.auctionPool || []).length + (game.market || []).length;
-    if (style === 'Banker' && lotsLeftI >= 10) {
-      // Very early: cap $5 at value-2 (=$3), $10 at value-3 (=$7).
-      // Still profitable, but preserves cash for early gem grabs.
+    if (style === 'Banker' && lotsLeftI >= 12) {
+      // Only the very first 3 lots: cap $5 at value-2, $10 at value-3.
       const earlyCap = card.value - (card.value >= 10 ? 3 : 2);
       maxWilling = Math.min(maxWilling, earlyCap);
     }
@@ -523,13 +522,12 @@ function botPickBid(p, game) {
       } catch {}
       if (peekMax >= 0 && p.money >= 1) {
         const target = peekMax + 1;
-        // Larger noise (was 0.5) — Sniper isn't omniscient, sometimes misjudges EV
-        const noise = (r() - 0.5) * 3.0;  // -1.5..+1.5
-        // Require 5% profit margin (target ≤ EV*0.95) — don't snipe break-even lots
-        // when others bid sensibly; the +1 doesn't compensate for variance.
-        const profitFloor = expectedValue * 0.95 + noise;
-        // 8% random skip — even cheaters get distracted / mis-click
-        if (r() < 0.08) return 0;
+        // Larger noise — Sniper isn't omniscient, sometimes misjudges EV
+        const noise = (r() - 0.5) * 4.0;  // -2..+2
+        // Require 10% profit margin (target ≤ EV*0.90) — don't snipe break-even lots
+        const profitFloor = expectedValue * 0.90 + noise;
+        // 12% random skip — even cheaters get distracted / mis-click
+        if (r() < 0.12) return 0;
         if (target <= p.money && target <= profitFloor) {
           return Math.max(1, target);
         }
@@ -690,7 +688,7 @@ function botPickBid(p, game) {
       //     value for a gem that hasn't completed yet — leave margin for the chance
       //     someone else snipes the final gem). ***
       // Apply this AFTER personalityMult below — done via a flag tracked here:
-      p._mhStopLoss = lotValue + missionBonus * 0.7 + diversityBonus + oneAwayBonus;
+      p._mhStopLoss = lotValue + missionBonus * 0.85 + diversityBonus + oneAwayBonus;
       break;
     case 'loanlover':
       // CHEAT: knows if a more profitable Loan card is coming → don't waste cash now
@@ -710,6 +708,21 @@ function botPickBid(p, game) {
   if (styleKey === 'aggressor' && typeof p._aggStopLoss === 'number') {
     if (bid > p._aggStopLoss) bid = Math.max(0, Math.floor(p._aggStopLoss));
     delete p._aggStopLoss;
+  }
+
+  // *** GLOBAL EARLY-GAME BRAKE: in the first 5 lots (lotsLeft >= 11),
+  //     cap any GEM bid at EV * 0.85. Why? Empirically all bots burn cash
+  //     too fast in early lots, leaving them with $1-2 by lot 10. The first
+  //     few gems aren't usually mission-critical and V can shift wildly,
+  //     so paying full EV early is -EV. Skipped for: Sniper (cheat-driven),
+  //     Hoarder (already has its own pacing), Newbie (identity = irrational). ***
+  if (card.kind === 'AUCTION_GEM') {
+    const lotsLeftG = (game.auctionPool || []).length + (game.market || []).length;
+    if (lotsLeftG >= 11 && styleKey !== 'sniper' && styleKey !== 'hoarder' && styleKey !== 'newbie') {
+      const earlyEV = lotValue + missionBonus + diversityBonus + oneAwayBonus;
+      const earlyCap = Math.floor(earlyEV * 0.85);
+      if (bid > earlyCap) bid = Math.max(0, earlyCap);
+    }
   }
 
   // Opponent-aware sniping: bid just enough to win, not more
