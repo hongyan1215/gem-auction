@@ -332,7 +332,7 @@ function botPickBid(p, game) {
     }
     let trueValue;
     if (card.kind === 'AUCTION_GEM') {
-      // Boost partial mission progress 0.40 → 0.65 (God was losing 7.2 score/loss to missions)
+      // Boost partial mission progress 0.40 → 0.65 (sweet spot from grid search)
       trueValue = lotValue + cheatMission + cheatMissionProgress * 1.625;
     } else if (card.kind === 'INVEST') {
       // Invest: lock X cash, get +bonus at endgame.
@@ -358,13 +358,8 @@ function botPickBid(p, game) {
       }
       // Heuristic: if money < 8 AND ≥3 auction lots left AND high-V gems exist → borrow cheap
       if (p.money < 8 && lotsLeft >= 3 && highValueGems.length > 0 && upcomingJackpots >= 3) {
-        // Loan value 10 → bid 1-2 (gain 8-9 cash, lose 10 score → net +(cash²/10) future score)
-        // Loan value 20 → bid 1-3 (gain 17-19 cash, lose 20 score → only worth if huge jackpot)
-        const cashGain = (card.value || 10) - 1;
-        // Worth it if expected score gain from extra cash > value (loss)
-        // Conservative: only loan-10 with bid ≤2
         if (card.value <= 10) trueValue = 1;
-        else if (p.money < 4 && upcomingJackpots >= 4) trueValue = 1; // desperate loan-20
+        else if (p.money < 4 && upcomingJackpots >= 4) trueValue = 1;
         else return 0;
       } else if (p.money >= 8 || lotsLeft < 3) {
         return 0;
