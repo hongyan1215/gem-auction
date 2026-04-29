@@ -342,11 +342,34 @@ function botPickBid(p, game) {
       trueValue = bonus - lockCost;
       if (trueValue < 1) return 0;
     } else if (card.kind === 'LOAN') {
-      // Loan: get cash now (-bid), pay value at end. Net = -bid score.
-      // Bad unless cash truly < useful threshold AND late game.
+      // Loan: get (value - bid) cash now, lose value at end. Net score = -bid.
+      // God uses Loan strategically: if she's cash-starved AND a known jackpot
+      // is coming up in the remaining deck, the cash translates to score.
       const lotsLeft = ((game.auctionPool && game.auctionPool.length) || 0);
-      if (p.money >= 8 || lotsLeft >= 8) return 0;
-      trueValue = 1; // bid 1 max
+      // Look ahead: count upcoming jackpot lots (V≥4 per gem × 2-gem lot, or solo gem with stacked V)
+      let upcomingJackpots = 0;
+      const remainingDeck = (game.deck && Array.isArray(game.deck)) ? game.deck : [];
+      // Estimate remaining gems in pool: any gem whose myEstUnused ≥ 3 (V≥12) is "high value"
+      const highValueGems = GEM_TYPES.filter(g => (myEstUnused[g] || 0) >= 3);
+      // Auction cards remaining that bring high-V gems out
+      for (const c of remainingDeck) {
+        if (c.kind === 'AUCTION_GEM' || c.kind === 'AUCTION_2GEMS') upcomingJackpots++;
+      }
+      // Heuristic: if money < 8 AND ≥3 auction lots left AND high-V gems exist → borrow cheap
+      if (p.money < 8 && lotsLeft >= 3 && highValueGems.length > 0 && upcomingJackpots >= 3) {
+        // Loan value 10 → bid 1-2 (gain 8-9 cash, lose 10 score → net +(cash²/10) future score)
+        // Loan value 20 → bid 1-3 (gain 17-19 cash, lose 20 score → only worth if huge jackpot)
+        const cashGain = (card.value || 10) - 1;
+        // Worth it if expected score gain from extra cash > value (loss)
+        // Conservative: only loan-10 with bid ≤2
+        if (card.value <= 10) trueValue = 1;
+        else if (p.money < 4 && upcomingJackpots >= 4) trueValue = 1; // desperate loan-20
+        else return 0;
+      } else if (p.money >= 8 || lotsLeft < 3) {
+        return 0;
+      } else {
+        trueValue = 1;
+      }
     } else {
       trueValue = card.value || 0;
     }
