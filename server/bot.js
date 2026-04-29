@@ -13,6 +13,7 @@ const BOT_ARCHETYPES = {
   LoanLover:     { aggression: 1.05, missionFocus: 0.70, intelligence: 0.95, signalAware: 0.75, loanLover: 1.10, investLover: 0.80 },
   Wildcard:      { aggression: 1.15, missionFocus: 0.95, intelligence: 1.10, signalAware: 1.10, loanLover: 0.85, investLover: 0.90 },
   Newbie:        { aggression: 0.85, missionFocus: 0.55, intelligence: 0.55, signalAware: 0.50, loanLover: 0.50, investLover: 0.55 },
+  God:           { aggression: 1.40, missionFocus: 1.40, intelligence: 1.40, signalAware: 1.40, loanLover: 1.00, investLover: 1.00 },
 };
 const STYLE_KEYS = Object.keys(BOT_ARCHETYPES);
 
@@ -34,8 +35,10 @@ function randomBotName() { return BOT_NAMES[Math.floor(Math.random() * BOT_NAMES
 
 function makeBotProfile(excludeStyles = null) {
   const exclude = excludeStyles instanceof Set ? excludeStyles : new Set(excludeStyles || []);
-  const pool = STYLE_KEYS.filter(s => !exclude.has(s));
-  const candidates = pool.length > 0 ? pool : STYLE_KEYS; // fallback if all used
+  // God is internal-test only — never spawned in real games
+  const publicPool = STYLE_KEYS.filter(s => s !== 'God');
+  const pool = publicPool.filter(s => !exclude.has(s));
+  const candidates = pool.length > 0 ? pool : publicPool; // fallback if all used
   const style = candidates[Math.floor(Math.random() * candidates.length)];
   return { style, traits: rollTraits(style), name: randomBotName() + '·' + style };
 }
@@ -275,15 +278,14 @@ function botPickBid(p, game) {
     }
   }
 
-  // *** WILDCARD CHEAT: omniscient — sees every player's hidden gems for perfect V(n) ***
-  if (String(style || '').toLowerCase() === 'wildcard') {
+  // *** WILDCARD/GOD CHEAT: omniscient — sees every player's hidden gems for perfect V(n) ***
+  const _styleLower = String(style || '').toLowerCase();
+  if (_styleLower === 'wildcard' || _styleLower === 'god') {
     for (const tt of GEM_TYPES) myEstUnused[tt] = 0;
     for (const pl of game.players) {
       for (const g of pl.hiddenGems) myEstUnused[g] = (myEstUnused[g] || 0) + 1;
       for (const g of pl.revealedGems) myEstUnused[g] = (myEstUnused[g] || 0) + 1;
     }
-    // After winning this lot we reveal one of OUR hiddens. So one of our hidden
-    // moves to revealed (still unused). Net: unused count unchanged. Good.
   }
 
   let lotValue = 0;
@@ -292,6 +294,106 @@ function botPickBid(p, game) {
     // V depends on count remaining unused at endgame; auctioning doesn't reduce unused.
     // So I value lot at V(myEstUnused[g]) per gem.
     lotValue += valueForCount(myEstUnused[g] || 0);
+  }
+
+  // *** GOD FAST-PATH: omniscient + reads ACTUAL submitted bids (peeks last) ***
+  // Strategy: God knows EXACT trueValue. She bids min(money, trueValue) — outbids
+  // anyone up to true value, wins every profitable lot, never overpays.
+  if (String(style || '').toLowerCase() === 'god') {
+    let cheatMission = 0;
+    let cheatMissionProgress = 0;
+    if (card.kind === 'AUCTION_GEM') {
+      for (const m of game.missions) {
+        if (m.completedBy) continue;
+        if (meets(m, p.wonGems)) continue;
+        if (meets(m, p.wonGems.concat(lot))) {
+          cheatMission += m.score;
+        } else {
+          // Partial progress — value at 0.4× score
+          const myCounts = counts(p.wonGems);
+          const futureCounts = counts(p.wonGems.concat(lot));
+          if (m.type === 'TWO_SPECIFIC' || m.type === 'THREE_SPECIFIC') {
+            const have = m.gems.filter(g => myCounts[g]).length;
+            const willGet = m.gems.filter(g => lot.includes(g) && !myCounts[g]).length;
+            if (willGet > 0) cheatMissionProgress += m.score * 0.40 * (willGet / m.gems.length);
+          } else if (m.type === 'FOUR_DIFFERENT') {
+            const haveTypes = Object.keys(myCounts).length;
+            const newTypes = Object.keys(futureCounts).length;
+            if (newTypes > haveTypes) cheatMissionProgress += m.score * 0.40 * ((newTypes - haveTypes) / 4);
+          } else if (m.type === 'THREE_SAME') {
+            for (const g of GEM_TYPES) {
+              if ((myCounts[g] || 0) < 3 && (futureCounts[g] || 0) > (myCounts[g] || 0)) {
+                cheatMissionProgress += m.score * 0.40 * ((futureCounts[g] || 0) / 3);
+              }
+            }
+          }
+        }
+      }
+    }
+    let trueValue;
+    if (card.kind === 'AUCTION_GEM') {
+      trueValue = lotValue + cheatMission + cheatMissionProgress;
+    } else if (card.kind === 'INVEST') {
+      // Invest: lock X cash, get +bonus at endgame.
+      // Opportunity cost: locked X could have bought ~0.60×X worth of gem score.
+      // Net trueValue = bonus - 0.60×X (cash returns at end, but we lose buying power).
+      const bonus = card.bonus || (card.value === 5 ? 5 : 10);
+      const lockCost = card.value * 0.60;
+      trueValue = bonus - lockCost;
+      if (trueValue < 1) return 0;
+    } else if (card.kind === 'LOAN') {
+      // Loan: get cash now (-bid), pay value at end. Net = -bid score.
+      // Bad unless cash truly < useful threshold AND late game.
+      const lotsLeft = ((game.auctionPool && game.auctionPool.length) || 0);
+      if (p.money >= 8 || lotsLeft >= 8) return 0;
+      trueValue = 1; // bid 1 max
+    } else {
+      trueValue = card.value || 0;
+    }
+    // God-spoiler: also compute how much score each opponent would gain from this lot.
+    // God is willing to bid up to (max_opp_gain + own_gain) to deny competitors.
+    let maxOppGain = 0;
+    if (card.kind === 'AUCTION_GEM') {
+      for (const opp of game.players) {
+        if (opp.id === p.id) continue;
+        let oppGemVal = 0;
+        for (const g of lot) oppGemVal += valueForCount(myEstUnused[g] || 0);
+        let oppMission = 0;
+        for (const m of game.missions) {
+          if (m.completedBy) continue;
+          if (meets(m, opp.wonGems)) continue;
+          if (meets(m, opp.wonGems.concat(lot))) oppMission += m.score;
+        }
+        const oppTotal = oppGemVal + oppMission;
+        if (oppTotal > maxOppGain) maxOppGain = oppTotal;
+      }
+      // Spoiler 1.0×: God denies opponent's full gain (she peeks last, always wins)
+      trueValue = Math.max(trueValue, maxOppGain);
+    }
+    if (trueValue < 0.5) return 0;
+
+    // Read actual submitted bids (God peeks last). game.bids is a Map.
+    let oppMax = 0;
+    if (game.bids && typeof game.bids.entries === 'function') {
+      for (const [pid, bidVal] of game.bids.entries()) {
+        if (pid !== p.id && typeof bidVal === 'number' && bidVal > oppMax) oppMax = bidVal;
+      }
+    }
+    // Strict pace: hoard cash for jackpots
+    const lotsLeftG = ((game.auctionPool && game.auctionPool.length) || 0);
+    const isJackpot = trueValue >= 15 || cheatMission >= 10;
+
+    // Strict pace: hoard cash for jackpots
+    let paceCap = isJackpot ? p.money : Math.floor(p.money * (lotsLeftG > 6 ? 0.30 : lotsLeftG > 3 ? 0.50 : 0.95));
+
+    // God strategy: outbid opponent's actual max by 1 if affordable & worthwhile.
+    // - If oppMax+1 ≤ trueValue: easy win, take it.
+    // - If oppMax+1 > trueValue but ≤ paceCap: still outbid (deny) up to paceCap.
+    let bid = oppMax + 1;
+    if (bid > paceCap) bid = Math.min(Math.floor(trueValue) + 1, paceCap); // can't afford spoiler, fall back
+    bid = Math.max(1, bid);
+    bid = Math.min(bid, p.money);
+    return bid;
   }
 
   // *** WILDCARD CHEAT FAST-PATH ***
@@ -923,7 +1025,7 @@ function botPickReveal(p, game) {
   }
 
   const style = String((p.profile && p.profile.style) || '').toLowerCase();
-  const isCheater = (style === 'wildcard' || style === 'sniper');
+  const isCheater = (style === 'wildcard' || style === 'sniper' || style === 'god');
 
   let bestGem = uniqueCandidates[0];
   let bestScore = -Infinity;

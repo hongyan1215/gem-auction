@@ -30,12 +30,14 @@ function runOne() {
   let safety = 200;
   while (game.phase !== 'GAME_OVER' && safety-- > 0) {
     if (game.phase === 'BIDDING') {
-      // Sniper peeks: it bids LAST so it can read game.bids
-      const order = [...game.players].sort((a, b) => {
-        const sa = (a.profile?.style || a.name || '').toLowerCase() === 'sniper' ? 1 : 0;
-        const sb = (b.profile?.style || b.name || '').toLowerCase() === 'sniper' ? 1 : 0;
-        return sa - sb;
-      });
+      // Peek order: normal bots first, then Sniper, then God (God sees everyone incl. Sniper)
+      const peekRank = (p) => {
+        const s = (p.profile?.style || p.name || '').toLowerCase();
+        if (s === 'god') return 2;
+        if (s === 'sniper') return 1;
+        return 0;
+      };
+      const order = [...game.players].sort((a, b) => peekRank(a) - peekRank(b));
       for (const p of order) {
         const bid = botPickBid(p, game);
         game.submitBid(p.id, bid);
